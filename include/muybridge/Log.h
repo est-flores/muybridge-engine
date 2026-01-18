@@ -97,8 +97,8 @@ constexpr const char *kLogTag = "Muybridge";
  * @param ... Format arguments
  */
 template <typename... Args>
-inline void logImpl(Level level, const char *file, int line, const char *fmt,
-                    Args... args) {
+inline void logImpl(Level level, [[maybe_unused]] const char *file,
+                    [[maybe_unused]] int line, const char *fmt, Args... args) {
   // Skip if below minimum level
   if (static_cast<uint8_t>(level) < MUYBRIDGE_LOG_LEVEL) {
     return;
@@ -126,13 +126,18 @@ inline void logImpl(Level level, const char *file, int line, const char *fmt,
 
   // Format timestamp + message
   char buffer[512];
-  int offset = std::snprintf(buffer, sizeof(buffer), "[%s] [%8.3fms] ",
-                             levelStr, elapsedMillis());
+  char msgBuffer[384];
 
-  if (offset > 0 && offset < static_cast<int>(sizeof(buffer))) {
-    std::snprintf(buffer + offset, sizeof(buffer) - static_cast<size_t>(offset),
-                  fmt, args...);
+  // First format the user message (handles the format-security warning)
+  if constexpr (sizeof...(args) == 0) {
+    std::snprintf(msgBuffer, sizeof(msgBuffer), "%s", fmt);
+  } else {
+    std::snprintf(msgBuffer, sizeof(msgBuffer), fmt, args...);
   }
+
+  // Then format the final output with timestamp
+  std::snprintf(buffer, sizeof(buffer), "[%s] [%8.3fms] %s", levelStr,
+                elapsedMillis(), msgBuffer);
 
 #if defined(MUYBRIDGE_PLATFORM_ANDROID)
   int priority = ANDROID_LOG_VERBOSE;

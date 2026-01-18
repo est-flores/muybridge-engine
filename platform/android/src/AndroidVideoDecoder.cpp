@@ -279,16 +279,11 @@ bool AndroidVideoDecoder::extractSample() {
   }
 
   int64_t pts = AMediaExtractor_getSampleTime(extractor_);
-  uint32_t flags = 0;
 
-  if (AMediaExtractor_getSampleFlags(extractor_) &
-      AMEDIAEXTRACTOR_SAMPLE_FLAG_SYNC) {
-    flags |= AMEDIACODEC_BUFFER_FLAG_KEY_FRAME;
-  }
-
+  // Queue input buffer (flags are for codec, not sync info - use 0)
   AMediaCodec_queueInputBuffer(codec_, static_cast<size_t>(bufIdx), 0,
                                static_cast<size_t>(sampleSize),
-                               static_cast<uint64_t>(pts), flags);
+                               static_cast<uint64_t>(pts), 0);
 
   AMediaExtractor_advance(extractor_);
   return true;
