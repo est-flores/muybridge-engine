@@ -1,5 +1,7 @@
 import Foundation
 import Metal
+import MetalKit
+import QuartzCore
 import Combine
 
 /// Muybridge video player for iOS.
@@ -8,8 +10,7 @@ import Combine
 /// - Sub-200ms TTFF
 /// - Zero-copy decode to Metal
 /// - A/V sync within ±16ms
-@Observable
-public final class MuybridgePlayer {
+public final class MuybridgePlayer: ObservableObject {
     
     /// Player state
     public enum State: Sendable {
@@ -24,11 +25,11 @@ public final class MuybridgePlayer {
     
     // MARK: - Public Properties
     
-    public private(set) var state: State = .idle
-    public private(set) var duration: Int64 = 0
-    public private(set) var position: Int64 = 0
-    public private(set) var videoWidth: Int32 = 0
-    public private(set) var videoHeight: Int32 = 0
+    @Published public private(set) var state: State = .idle
+    @Published public private(set) var duration: Int64 = 0
+    @Published public private(set) var position: Int64 = 0
+    @Published public private(set) var videoWidth: Int32 = 0
+    @Published public private(set) var videoHeight: Int32 = 0
     
     // MARK: - Private Properties
     
@@ -181,4 +182,3 @@ private func MuybridgeReleaseRenderer(_ handle: UnsafeMutableRawPointer)
 
 @_silgen_name("MuybridgeGetDevice")
 private func MuybridgeGetDevice(_ handle: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer?
-
