@@ -62,4 +62,4 @@ jobs:
         with:
           files: platform/ios/MuybridgePlayerBinary.xcframework.zip
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}

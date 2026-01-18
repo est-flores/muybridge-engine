@@ -124,7 +124,7 @@ publishing {
             url = uri("https://maven.pkg.github.com/yourorg/muybridge-engine")
             credentials {
                 username = System.getenv("GITHUB_ACTOR") ?: ""
-                password = System.getenv("GITHUB_TOKEN") ?: ""
+                password = System.getenv("ACCESS_TOKEN") ?: ""
             }
         }
         
