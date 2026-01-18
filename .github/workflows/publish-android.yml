@@ -1,0 +1,54 @@
+name: Publish Android Package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26b
+
+      - name: Build Release AAR
+        run: |
+          cd platform/android
+          chmod +x ../../gradlew 2>/dev/null || true
+          ./gradlew :muybridge-android:assembleRelease
+
+      - name: Run Tests
+        run: |
+          cd platform/android
+          ./gradlew :muybridge-android:testReleaseUnitTest
+
+      - name: Publish to GitHub Packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          cd platform/android
+          ./gradlew :muybridge-android:publishReleasePublicationToGitHubPackagesRepository
+
+      - name: Upload AAR Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: muybridge-player-aar
+          path: platform/android/build/outputs/aar/*.aar
