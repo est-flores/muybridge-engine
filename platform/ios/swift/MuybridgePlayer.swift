@@ -181,3 +181,4 @@ private func MuybridgeReleaseRenderer(_ handle: UnsafeMutableRawPointer)
 
 @_silgen_name("MuybridgeGetDevice")
 private func MuybridgeGetDevice(_ handle: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer?
+
