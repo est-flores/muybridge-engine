@@ -50,4 +50,4 @@ cmake --build . -j$(nproc)
 
 ## License
 
-Proprietary - All rights reserved.
+Formula Systems, LLC. - All rights reserved.
