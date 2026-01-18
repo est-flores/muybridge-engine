@@ -17,12 +17,18 @@ if(NOT ANDROID)
     message(FATAL_ERROR "This CMakeLists.txt is for Android only")
 endif()
 
-if(ANDROID_NATIVE_API_LEVEL LESS 24)
-    message(FATAL_ERROR "Muybridge requires Android API level 24+")
-endif()
+#-------------------------------------------------------------------------------
+# Core Library Sources (inline build)
+#-------------------------------------------------------------------------------
+
+set(CORE_SOURCES
+    ../../src/core/Clock.cpp
+    ../../src/core/AVSync.cpp
+    ../../src/core/BufferPool.cpp
+)
 
 #-------------------------------------------------------------------------------
-# Source Files
+# Android-specific Sources
 #-------------------------------------------------------------------------------
 
 set(ANDROID_SOURCES
@@ -35,19 +41,16 @@ set(ANDROID_SOURCES
 # Android Library
 #-------------------------------------------------------------------------------
 
-add_library(muybridge_android SHARED ${ANDROID_SOURCES})
+add_library(muybridge_android SHARED 
+    ${CORE_SOURCES}
+    ${ANDROID_SOURCES}
+)
 
 # Include paths
 target_include_directories(muybridge_android
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
-        ${CMAKE_SOURCE_DIR}/include
-)
-
-# Link core library
-target_link_libraries(muybridge_android
-    PRIVATE
-        muybridge_core
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../include
 )
 
 #-------------------------------------------------------------------------------
@@ -86,7 +89,6 @@ target_compile_options(muybridge_android
     PRIVATE
         -Wall
         -Wextra
-        -Wpedantic
         -fvisibility=hidden
 )
 

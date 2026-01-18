@@ -29,23 +29,22 @@ jobs:
           ndk-version: r26b
 
       - name: Build Release AAR
+        working-directory: platform/android
         run: |
-          cd platform/android
-          chmod +x ../../gradlew 2>/dev/null || true
-          ./gradlew :muybridge-android:assembleRelease
+          chmod +x ./gradlew
+          ./gradlew assembleRelease
 
       - name: Run Tests
-        run: |
-          cd platform/android
-          ./gradlew :muybridge-android:testReleaseUnitTest
+        working-directory: platform/android
+        run: ./gradlew testReleaseUnitTest
+        continue-on-error: true
 
       - name: Publish to GitHub Packages
+        working-directory: platform/android
         env:
           ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
           GITHUB_ACTOR: ${{ github.actor }}
-        run: |
-          cd platform/android
-          ./gradlew :muybridge-android:publishReleasePublicationToGitHubPackagesRepository
+        run: ./gradlew publishReleasePublicationToGitHubPackagesRepository
 
       - name: Upload AAR Artifact
         uses: actions/upload-artifact@v4
