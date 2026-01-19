@@ -94,7 +94,7 @@ publishing {
             pom {
                 name.set("Muybridge Player")
                 description.set("Hardware-accelerated video player for Android")
-                url.set("https://github.com/yourorg/muybridge-engine")
+                url.set("https://github.com/formula-systems-org/muybridge-engine")
                 
                 licenses {
                     license {
@@ -111,8 +111,8 @@ publishing {
                 }
                 
                 scm {
-                    connection.set("scm:git:git://github.com/yourorg/muybridge-engine.git")
-                    url.set("https://github.com/yourorg/muybridge-engine")
+                    connection.set("scm:git:git://github.com/formula-systems-org/muybridge-engine.git")
+                    url.set("https://github.com/formula-systems-org/muybridge-engine")
                 }
             }
         }
@@ -121,7 +121,7 @@ publishing {
     repositories {
         maven {
             name = "GitHubPackages"
-            url = uri("https://maven.pkg.github.com/yourorg/muybridge-engine")
+            url = uri("https://maven.pkg.github.com/formula-systems-org/muybridge-engine")
             credentials {
                 username = System.getenv("GITHUB_ACTOR") ?: ""
                 password = System.getenv("ACCESS_TOKEN") ?: ""
