@@ -12,6 +12,7 @@
 
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 
 namespace {
 
