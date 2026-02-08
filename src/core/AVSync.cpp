@@ -7,8 +7,8 @@ AVSync::AVSync()
     : tolerance_(kSyncToleranceNanos), maxWait_(kMaxWaitNanos),
       maxLateness_(kMaxLatenessNanos) {}
 
-AVSync::AVSync(Timestamp toleranceNanos, Timestamp maxWaitNanos,
-               Timestamp maxLatenessNanos)
+AVSync::AVSync(const Timestamp toleranceNanos, const Timestamp maxWaitNanos,
+               const Timestamp maxLatenessNanos)
     : tolerance_(toleranceNanos), maxWait_(maxWaitNanos),
       maxLateness_(maxLatenessNanos) {}
 
@@ -17,9 +17,9 @@ SyncResult AVSync::calculate(Timestamp framePtsNanos,
   SyncResult result;
   result.driftNanos = framePtsNanos - clockNowNanos;
 
-  Timestamp tol = tolerance_.load(std::memory_order_relaxed);
-  Timestamp maxW = maxWait_.load(std::memory_order_relaxed);
-  Timestamp maxL = maxLateness_.load(std::memory_order_relaxed);
+  const Timestamp tol = tolerance_.load(std::memory_order_relaxed);
+  const Timestamp maxW = maxWait_.load(std::memory_order_relaxed);
+  const Timestamp maxL = maxLateness_.load(std::memory_order_relaxed);
 
   if (result.driftNanos >= -tol && result.driftNanos <= tol) {
     result.action = SyncAction::Present;

@@ -8,7 +8,7 @@ namespace muybridge {
 // Buffer Implementation
 //------------------------------------------------------------------------------
 
-Buffer::Buffer(uint8_t *data, size_t capacity, int32_t index, BufferPool *pool)
+Buffer::Buffer(uint8_t *data, const size_t capacity, const int32_t index, BufferPool *pool)
     : data_(data), capacity_(capacity), size_(0), index_(index), pool_(pool) {}
 
 Buffer::~Buffer() {

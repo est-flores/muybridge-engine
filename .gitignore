@@ -1,0 +1,84 @@
+#===============================================================================
+# Muybridge Engine - .gitignore
+#===============================================================================
+
+#-------------------------------------------------------------------------------
+# Build Outputs
+#-------------------------------------------------------------------------------
+# CMake build directories
+/build/
+/cmake-build-*/
+/.build/
+
+# Compiled libraries and objects
+*.a
+*.o
+*.so
+*.dylib
+
+# Compile commands symlink (generated, points to build dir)
+/compile_commands.json
+
+#-------------------------------------------------------------------------------
+# IDE & Editor Files
+#-------------------------------------------------------------------------------
+# JetBrains (CLion, Android Studio)
+/.idea/
+
+# VS Code
+/.vscode/
+*.code-workspace
+
+# Xcode user-specific files (project files are kept)
+xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.moved-aside
+DerivedData/
+
+# Vim/Neovim
+*.swp
+*.swo
+*~
+
+#-------------------------------------------------------------------------------
+# macOS System Files
+#-------------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+#-------------------------------------------------------------------------------
+# Android (Gradle)
+#-------------------------------------------------------------------------------
+/platform/android/.gradle/
+/platform/android/build/
+/platform/android/.cxx/
+/platform/android/local.properties
+
+#-------------------------------------------------------------------------------
+# Swift Package Manager
+#-------------------------------------------------------------------------------
+.swiftpm/
+Package.resolved
+.build/
+
+# SPM Sources directory (contains symlinks to actual sources)
+/Sources/
+
+#-------------------------------------------------------------------------------
+# Miscellaneous
+#-------------------------------------------------------------------------------
+# Clangd cache
+.cache/
+.clangd/
+
+# Core dumps
+core
+
+# Debug files
+*.dSYM/

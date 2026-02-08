@@ -5,7 +5,7 @@ let package = Package(
     name: "MuybridgePlayer",
     platforms: [
         .iOS(.v13),
-        .macOS(.v10_15)
+        .macOS(.v10_15),
     ],
     products: [
         .library(
@@ -14,11 +14,44 @@ let package = Package(
         )
     ],
     targets: [
-        // Swift wrapper - source code only (no binary dependency for now)
+        // C++/Obj-C++ native core - compiles bridge and platform code
+        .target(
+            name: "MuybridgeNative",
+            path: "Sources/MuybridgeNative",
+            sources: [
+                "core/Clock.cpp",
+                "core/AVSync.cpp",
+                "core/BufferPool.cpp",
+                "ios/IOSVideoDecoder.mm",
+                "ios/MetalVideoRenderer.mm",
+                "ios/MuybridgeBridge.mm",
+            ],
+            publicHeadersPath: "include",
+            cxxSettings: [
+                .headerSearchPath("."),
+                .headerSearchPath("include"),
+                .headerSearchPath("ios"),
+                .define("MUYBRIDGE_PLATFORM_IOS", to: "1", .when(platforms: [.iOS])),
+                .define("MUYBRIDGE_PLATFORM_MACOS", to: "1", .when(platforms: [.macOS])),
+            ],
+            linkerSettings: [
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("CoreMedia"),
+                .linkedFramework("CoreVideo"),
+                .linkedFramework("VideoToolbox"),
+                .linkedFramework("Metal"),
+                .linkedFramework("MetalKit"),
+                .linkedFramework("QuartzCore"),
+            ]
+        ),
+
+        // Swift wrapper - depends on native core
         .target(
             name: "MuybridgePlayer",
-            path: "platform/ios/swift",
+            dependencies: ["MuybridgeNative"],
+            path: "Sources/MuybridgePlayer",
             sources: ["MuybridgePlayer.swift", "MetalVideoView.swift"]
-        )
-    ]
+        ),
+    ],
+    cxxLanguageStandard: .cxx17
 )
