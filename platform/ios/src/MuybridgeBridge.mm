@@ -45,7 +45,11 @@
     _decoder->setFrameCallback(
         [weakSelf](CVPixelBufferRef pixelBuffer, muybridge::Timestamp pts) {
           MuybridgePlayerHandle *strongSelf = weakSelf;
-          if (strongSelf) {
+          if (strongSelf && pixelBuffer) {
+            // CRITICAL: Retain the pixel buffer before storing!
+            // The decoder will release it after this callback returns.
+            CVPixelBufferRetain(pixelBuffer);
+            
             @synchronized(strongSelf) {
               if (strongSelf.currentFrame) {
                 CVPixelBufferRelease(strongSelf.currentFrame);

@@ -96,7 +96,10 @@ public:
   bool isEndOfStream() const { return endOfStream_.load(); }
 
 private:
+  bool openWithAVPlayer(NSURL *url);      // For network URLs
+  bool openWithAssetReader(NSURL *url);   // For local files
   void decodeLoop();
+  void playerDecodeLoop();  // For AVPlayer-based decoding
   bool configureDecode();
 
   // VideoToolbox callback
@@ -110,11 +113,18 @@ private:
   // State
   std::atomic<bool> running_{false};
   std::atomic<bool> endOfStream_{false};
+  bool useAVPlayer_{false};  // True for network URLs
 
   // AVFoundation objects (bridged)
-  void *asset_;       // AVAsset*
-  void *assetReader_; // AVAssetReader*
-  void *videoOutput_; // AVAssetReaderTrackOutput*
+  void *asset_;       // AVAsset* or AVURLAsset*
+  void *assetReader_; // AVAssetReader* (for local files)
+  void *videoOutput_; // AVAssetReaderTrackOutput* (for local files)
+  
+  // AVPlayer-based (for network URLs)
+  void *player_;           // AVPlayer*
+  void *playerItem_;       // AVPlayerItem*
+  void *playerVideoOutput_; // AVPlayerItemVideoOutput*
+  void *playerReadyObserver_; // KVO observer token
 
   // VideoToolbox
   VTDecompressionSessionRef decompressionSession_;

@@ -70,27 +70,67 @@ bool MetalVideoRenderer::createTextureCache() {
 bool MetalVideoRenderer::createPipeline() {
   NSError *error = nil;
 
-  // Load shader library
-  id<MTLLibrary> library = [device_ newDefaultLibrary];
-  if (!library) {
-    // Try loading from bundle
-    NSBundle *bundle =
-        [NSBundle bundleForClass:NSClassFromString(@"MuybridgePlayer")];
-    if (!bundle) {
-      bundle = [NSBundle mainBundle];
+  // Inline shader source - required because SPM packages can't include precompiled metallib
+  NSString *shaderSource = @R"(
+    #include <metal_stdlib>
+    using namespace metal;
+    
+    struct VertexOut {
+        float4 position [[position]];
+        float2 texCoord;
+    };
+    
+    // BT.709 YCbCr to RGB conversion matrix
+    constant float3x3 kColorConversion709 = float3x3(
+        float3(1.0,  1.0,      1.0),
+        float3(0.0, -0.18732, 1.8556),
+        float3(1.5748, -0.46812, 0.0)
+    );
+    
+    struct Vertex {
+        float2 position;
+        float2 texCoord;
+    };
+    
+    vertex VertexOut videoVertex(const device Vertex* vertices [[buffer(0)]],
+                                  uint vid [[vertex_id]]) {
+        VertexOut out;
+        out.position = float4(vertices[vid].position, 0.0, 1.0);
+        out.texCoord = vertices[vid].texCoord;
+        return out;
     }
-
-    NSURL *libraryURL = [bundle URLForResource:@"VideoShaders"
-                                 withExtension:@"metallib"];
-    if (libraryURL) {
-      library = [device_ newLibraryWithURL:libraryURL error:&error];
+    
+    fragment float4 videoFragment(VertexOut in [[stage_in]],
+                                   texture2d<float> yTexture [[texture(0)]],
+                                   texture2d<float> cbcrTexture [[texture(1)]]) {
+        constexpr sampler textureSampler(mag_filter::linear, min_filter::linear, address::clamp_to_edge);
+        
+        float y = yTexture.sample(textureSampler, in.texCoord).r;
+        float2 cbcr = cbcrTexture.sample(textureSampler, in.texCoord).rg;
+        
+        // Adjust for video range (16-235 for Y, 16-240 for CbCr)
+        y = (y - 16.0/255.0) * (255.0/219.0);
+        cbcr = (cbcr - float2(128.0/255.0)) * (255.0/224.0);
+        
+        float3 ycbcr = float3(y, cbcr.x, cbcr.y);
+        float3 rgb = kColorConversion709 * ycbcr;
+        rgb = saturate(rgb);
+        
+        return float4(rgb, 1.0);
     }
-  }
+  )";
 
+  // Compile shader from source
+  id<MTLLibrary> library = [device_ newLibraryWithSource:shaderSource
+                                                 options:nil
+                                                   error:&error];
   if (!library) {
-    MUY_LOGE("Failed to load shader library");
+    MUY_LOGE("Failed to compile shader: %s",
+             [error.localizedDescription UTF8String]);
     return false;
   }
+
+  MUY_LOGI("Shader library compiled successfully");
 
   id<MTLFunction> vertexFunction = [library newFunctionWithName:@"videoVertex"];
   id<MTLFunction> fragmentFunction =
@@ -129,11 +169,26 @@ void MetalVideoRenderer::setViewport(int width, int height) {
 void MetalVideoRenderer::render(CVPixelBufferRef pixelBuffer,
                                 id<CAMetalDrawable> drawable,
                                 id<MTLCommandBuffer> commandBuffer) {
-  if (!initialized_ || !pixelBuffer) {
+  // Validate all required inputs
+  if (!initialized_ || !pixelBuffer || !drawable || !commandBuffer) {
+    return;
+  }
+  
+  // Validate texture cache exists
+  if (!textureCache_) {
+    MUY_LOGE("Texture cache is null!");
+    return;
+  }
+  
+  // Validate drawable has a texture
+  if (!drawable.texture) {
     return;
   }
 
   @autoreleasepool {
+    // Flush texture cache to prevent stale textures
+    CVMetalTextureCacheFlush(textureCache_, 0);
+    
     size_t width = CVPixelBufferGetWidth(pixelBuffer);
     size_t height = CVPixelBufferGetHeight(pixelBuffer);
 
@@ -145,8 +200,8 @@ void MetalVideoRenderer::render(CVPixelBufferRef pixelBuffer,
         0, // Y plane
         &yTextureRef);
 
-    if (result != kCVReturnSuccess) {
-      MUY_LOGE("Failed to create Y texture: %d", result);
+    if (result != kCVReturnSuccess || !yTextureRef) {
+      MUY_LOGE("Failed to create Y texture: %d (width=%zu, height=%zu)", result, width, height);
       return;
     }
 
@@ -158,7 +213,7 @@ void MetalVideoRenderer::render(CVPixelBufferRef pixelBuffer,
         1, // CbCr plane
         &cbcrTextureRef);
 
-    if (result != kCVReturnSuccess) {
+    if (result != kCVReturnSuccess || !cbcrTextureRef) {
       CFRelease(yTextureRef);
       MUY_LOGE("Failed to create CbCr texture: %d", result);
       return;
@@ -166,6 +221,14 @@ void MetalVideoRenderer::render(CVPixelBufferRef pixelBuffer,
 
     id<MTLTexture> yTexture = CVMetalTextureGetTexture(yTextureRef);
     id<MTLTexture> cbcrTexture = CVMetalTextureGetTexture(cbcrTextureRef);
+    
+    // Validate extracted textures
+    if (!yTexture || !cbcrTexture) {
+      CFRelease(yTextureRef);
+      CFRelease(cbcrTextureRef);
+      MUY_LOGE("Failed to get MTLTexture from CVMetalTexture");
+      return;
+    }
 
     // Create render pass
     MTLRenderPassDescriptor *passDescriptor =
@@ -178,6 +241,14 @@ void MetalVideoRenderer::render(CVPixelBufferRef pixelBuffer,
 
     id<MTLRenderCommandEncoder> encoder =
         [commandBuffer renderCommandEncoderWithDescriptor:passDescriptor];
+    
+    // Validate encoder was created
+    if (!encoder) {
+      CFRelease(yTextureRef);
+      CFRelease(cbcrTextureRef);
+      MUY_LOGE("Failed to create render command encoder");
+      return;
+    }
 
     [encoder setViewport:(MTLViewport){0, 0, (double)viewportWidth_,
                                        (double)viewportHeight_, 0, 1}];
