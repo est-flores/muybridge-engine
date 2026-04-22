@@ -36,23 +36,38 @@ bool IOSVideoDecoder::open(const std::string &url) {
   }
 }
 
+// Terminal-visible timing log for the loading pipeline.
+// MUY_LOGI goes to os_log (Console.app only); these prints go to stderr so
+// they appear in the terminal during `swift run`.
+#define LOAD_PHASE(fmt, ...) \
+  fprintf(stderr, "[load] %8.1fms  " fmt "\n", muybridge::log::elapsedMillis(), ##__VA_ARGS__)
+
 // Network URL handling using AVPlayer + AVPlayerItemVideoOutput
 bool IOSVideoDecoder::openWithAVPlayer(NSURL *url) {
   MUY_LOGI("Using AVPlayer for network URL");
   useAVPlayer_ = true;
-  
+
+  LOAD_PHASE("network URL detected — creating AVPlayer");
+
   __block BOOL setupSuccess = NO;
   __block NSString *errorMessage = nil;
   __block MediaInfo capturedMediaInfo = {};
-  
+
   // Create player item with asset for better control
   AVURLAsset *asset = [AVURLAsset assetWithURL:url];
   AVPlayerItem *playerItem = [AVPlayerItem playerItemWithAsset:asset];
   AVPlayer *player = [AVPlayer playerWithPlayerItem:playerItem];
-  
-  // Important: Set automaticallyWaitsToMinimizeStalling for network playback
+
+  // YES = AVPlayer waits until it has enough buffer to play without stalling.
+  // This is required for smooth playback. Setting it to NO causes freezes when
+  // the network can't keep up with playback, which is worse than a slow start.
+  // The TTFF delay seen here is network latency, not renderer overhead.
   if (@available(iOS 10.0, *)) {
     player.automaticallyWaitsToMinimizeStalling = YES;
+    // Hint: target 2s of forward buffer. On fast networks this is lower than
+    // AVPlayer's default heuristic, so it starts sooner. On slow networks it
+    // falls back to whatever the network can provide.
+    playerItem.preferredForwardBufferDuration = 2.0;
   }
   
   // Create video output with pixel format for Metal - MUST include Metal compatibility key
@@ -89,84 +104,102 @@ bool IOSVideoDecoder::openWithAVPlayer(NSURL *url) {
   
   // Start playback to trigger buffering (will pause after ready)
   [player play];
-  MUY_LOGI("Started player to trigger buffering");
-  
-  // Poll for ready status directly on background queue (no nested dispatch)
+  LOAD_PHASE("AVPlayer.play() called — waiting for player ready (network)...");
+
+  // Poll for ready status directly on background queue (no nested dispatch).
+  // 16ms interval (~1 frame at 60fps) keeps setup overhead under 16ms once
+  // the player is ready, vs. the previous 100ms which added up to 100ms wait.
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     @autoreleasepool {
       int attempts = 0;
-      const int maxAttempts = 300; // 30 seconds total
-      
+      const int maxAttempts = 1875; // 30 seconds at 16ms intervals
+      bool loggedFirstStatusChange = false;
+
       while (playerItem.status == AVPlayerItemStatusUnknown && attempts < maxAttempts) {
-        // Check for errors during loading
         if (playerItem.error) {
           errorMessage = playerItem.error.localizedDescription;
           MUY_LOGE("Player item error during load: %s", [errorMessage UTF8String]);
           dispatch_semaphore_signal(semaphore);
           return;
         }
-        
-        [NSThread sleepForTimeInterval:0.1];
+
+        [NSThread sleepForTimeInterval:0.016]; // 16ms — 1 frame at 60fps
         attempts++;
-        
-        // Log progress every 5 seconds
-        if (attempts % 50 == 0) {
-          MUY_LOGI("Waiting for player... attempt %d/300, status: %ld", attempts, (long)playerItem.status);
+
+        if (!loggedFirstStatusChange && playerItem.status != AVPlayerItemStatusUnknown) {
+          LOAD_PHASE("player status changed from Unknown → %ld", (long)playerItem.status);
+          loggedFirstStatusChange = true;
+        }
+
+        // Warn every 2 seconds if still waiting — this is always network time.
+        // Common causes: CDN latency, or MOV/MP4 with moov atom at end of file
+        // (requires a second HTTP range request before playback can start).
+        // Fix: re-encode with `ffmpeg -movflags +faststart` to move moov to front.
+        if (attempts % 125 == 0) {
+          LOAD_PHASE("still waiting — %.1fs (network). MOV with end-moov? Try MP4+faststart.",
+                     attempts * 0.016);
         }
       }
-      
+
       if (playerItem.status == AVPlayerItemStatusFailed) {
         errorMessage = playerItem.error.localizedDescription;
         if (!errorMessage) errorMessage = @"Player item failed";
+        LOAD_PHASE("ERROR: player item failed — %s", [errorMessage UTF8String]);
         MUY_LOGE("Player item failed: %s", [errorMessage UTF8String]);
         dispatch_semaphore_signal(semaphore);
         return;
       }
-      
+
       if (playerItem.status != AVPlayerItemStatusReadyToPlay) {
+        LOAD_PHASE("ERROR: timeout waiting for player ready (30s)");
         errorMessage = @"Player item not ready after timeout";
-        MUY_LOGE("Player item timeout, status: %ld, error: %s", 
-                 (long)playerItem.status,
-                 playerItem.error ? [playerItem.error.localizedDescription UTF8String] : "none");
         dispatch_semaphore_signal(semaphore);
         return;
       }
-      
-      MUY_LOGI("Player item ready to play!");
-      
+
+      LOAD_PHASE("player ready — loading track metadata (renderer)...");
+
       // Pause now that we're ready (will resume when start() is called)
       dispatch_async(dispatch_get_main_queue(), ^{
         [player pause];
       });
-      
+
       // Load track properties asynchronously before accessing them
       [asset loadValuesAsynchronouslyForKeys:@[@"tracks", @"duration"] completionHandler:^{
+        LOAD_PHASE("tracks key loaded — reading video track properties (renderer)...");
         NSArray<AVAssetTrack *> *videoTracks = [asset tracksWithMediaType:AVMediaTypeVideo];
-        
+
         if (videoTracks.count == 0) {
+          LOAD_PHASE("ERROR: no video tracks found");
           errorMessage = @"No video tracks found";
           dispatch_semaphore_signal(semaphore);
           return;
         }
-        
+
         AVAssetTrack *videoTrack = videoTracks.firstObject;
-        
+
         // Load track-specific properties
         [videoTrack loadValuesAsynchronouslyForKeys:@[@"naturalSize", @"nominalFrameRate"] completionHandler:^{
           CGSize size = videoTrack.naturalSize;
-          
+
           capturedMediaInfo.videoWidth = static_cast<int32_t>(size.width);
           capturedMediaInfo.videoHeight = static_cast<int32_t>(size.height);
           capturedMediaInfo.frameRate = videoTrack.nominalFrameRate > 0 ? videoTrack.nominalFrameRate : 30.0f;
           capturedMediaInfo.durationNanos = static_cast<int64_t>(CMTimeGetSeconds(asset.duration) * kNanosPerSecond);
           capturedMediaInfo.hasVideo = true;
-          
+
+          LOAD_PHASE("video info: %dx%d @ %.1ffps, duration: %.1fs — setup complete",
+                     capturedMediaInfo.videoWidth,
+                     capturedMediaInfo.videoHeight,
+                     capturedMediaInfo.frameRate,
+                     (double)capturedMediaInfo.durationNanos / kNanosPerSecond);
+
           MUY_LOGI("Video: %dx%d @ %.1f fps, duration: %.2fs",
                    capturedMediaInfo.videoWidth,
                    capturedMediaInfo.videoHeight,
                    capturedMediaInfo.frameRate,
                    (double)capturedMediaInfo.durationNanos / kNanosPerSecond);
-          
+
           setupSuccess = YES;
           dispatch_semaphore_signal(semaphore);
         }];

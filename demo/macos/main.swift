@@ -83,16 +83,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let drawable = mtkView.drawableSize
         player.setViewport(width: Int(drawable.width), height: Int(drawable.height))
 
+        print("────────────────────────────────────────")
         print("loading: \(url)")
+        print("(detailed phase logs below — prefix [load])")
+        let t0 = Date()
         let ok = player.load(url: url)
+        let loadMs = Int(Date().timeIntervalSince(t0) * 1000)
+        print("────────────────────────────────────────")
         if ok {
             let w = player.videoWidth, h = player.videoHeight
             let durationMs = player.duration / 1_000_000
-            print("loaded: \(w)x\(h)  duration: \(durationMs)ms")
+            print("load() total: \(loadMs)ms  →  \(w)x\(h) @ \(durationMs / 1000)s")
             window.title = "Muybridge — \(w)×\(h)  \(durationMs / 1000)s"
             player.play()
         } else {
-            print("error: failed to load — check the URL and network access")
+            print("load() failed after \(loadMs)ms — check URL and network")
             window.title = "Muybridge — load failed"
         }
     }
