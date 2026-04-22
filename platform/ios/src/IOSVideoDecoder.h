@@ -95,6 +95,12 @@ public:
    */
   bool isEndOfStream() const { return endOfStream_.load(); }
 
+  /**
+   * @brief Return AVPlayerItem* as void* for Flutter plugin KVO (network only).
+   * Returns nullptr for local files.
+   */
+  void *getAVPlayerItem() const { return useAVPlayer_ ? playerItem_ : nullptr; }
+
 private:
   bool openWithAVPlayer(NSURL *url);      // For network URLs
   bool openWithAssetReader(NSURL *url);   // For local files

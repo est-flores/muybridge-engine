@@ -40,59 +40,15 @@ done
 ln -sf ../../platform/ios/swift/MuybridgePlayer.swift Sources/MuybridgePlayer/MuybridgePlayer.swift
 ln -sf ../../platform/ios/swift/MetalVideoView.swift Sources/MuybridgePlayer/MetalVideoView.swift
 
-# Copy (not link) files that are SPM-specific
+# Link iOS platform bridge header (canonical source for both SPM and CocoaPods)
+ln -sf ../../../platform/ios/src/MuybridgeBridge.h Sources/MuybridgeNative/ios/MuybridgeBridge.h
+
+# Write SPM-only modulemap (not linked — no source file to link to)
 cat > Sources/MuybridgeNative/include/module.modulemap << 'EOF'
 module MuybridgeNative {
-    header "MuybridgeBridge.h"
+    header "../ios/MuybridgeBridge.h"
     export *
 }
-EOF
-
-cat > Sources/MuybridgeNative/include/MuybridgeBridge.h << 'EOF'
-/**
- * @file MuybridgeBridge.h
- * @brief C API for Swift interop.
- */
-
-#ifndef MUYBRIDGE_BRIDGE_H
-#define MUYBRIDGE_BRIDGE_H
-
-#include <stdbool.h>
-#include <stdint.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-// Player lifecycle
-void *MuybridgeCreatePlayer(void);
-void MuybridgeReleasePlayer(void *handle);
-
-// Media loading
-bool MuybridgeOpenMedia(void *handle, const char *url);
-
-// Playback control
-void MuybridgePlay(void *handle);
-void MuybridgePause(void *handle);
-void MuybridgeSeek(void *handle, int64_t positionNanos);
-
-// Media info
-int64_t MuybridgeGetDuration(void *handle);
-int32_t MuybridgeGetVideoWidth(void *handle);
-int32_t MuybridgeGetVideoHeight(void *handle);
-
-// Rendering
-bool MuybridgeInitRenderer(void *handle);
-void MuybridgeSetViewport(void *handle, int32_t width, int32_t height);
-void MuybridgeRender(void *handle, void *drawable, void *commandBuffer);
-void MuybridgeReleaseRenderer(void *handle);
-void *MuybridgeGetDevice(void *handle);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif // MUYBRIDGE_BRIDGE_H
 EOF
 
 echo "✅ SPM Sources directory created successfully!"

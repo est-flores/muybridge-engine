@@ -22,8 +22,15 @@
 @property(nonatomic, assign) CVPixelBufferRef currentFrame;
 @property(nonatomic, assign) int64_t currentPts;
 
+// Flutter plugin hooks — nil until set via MuybridgeSetFrameAvailableCallback
+@property(nonatomic, assign) void (*frameAvailableCallback)(void *userData);
+@property(nonatomic, assign) void *frameAvailableUserData;
+
 - (instancetype)init;
 - (void)dealloc;
+
+// Returns the underlying AVPlayerItem for KVO in the Flutter plugin (network URLs only).
+- (AVPlayerItem *)playerItemBridge;
 
 @end
 
@@ -39,6 +46,8 @@
     _device = MTLCreateSystemDefaultDevice();
     _currentFrame = nullptr;
     _currentPts = 0;
+    _frameAvailableCallback = nullptr;
+    _frameAvailableUserData = nullptr;
 
     // Set up frame callback
     __weak MuybridgePlayerHandle *weakSelf = self;
@@ -49,13 +58,18 @@
             // CRITICAL: Retain the pixel buffer before storing!
             // The decoder will release it after this callback returns.
             CVPixelBufferRetain(pixelBuffer);
-            
+
             @synchronized(strongSelf) {
               if (strongSelf.currentFrame) {
                 CVPixelBufferRelease(strongSelf.currentFrame);
               }
               strongSelf.currentFrame = pixelBuffer;
               strongSelf.currentPts = pts;
+
+              // Notify Flutter plugin that a new frame is ready.
+              if (strongSelf.frameAvailableCallback) {
+                strongSelf.frameAvailableCallback(strongSelf.frameAvailableUserData);
+              }
             }
           }
         });
@@ -84,6 +98,14 @@
   }
 
   MUY_LOGI("MuybridgePlayerHandle released");
+}
+
+- (AVPlayerItem *)playerItemBridge {
+  if (_decoder) {
+    void *item = _decoder->getAVPlayerItem();
+    if (item) return (__bridge AVPlayerItem *)item;
+  }
+  return nil;
 }
 
 @end
@@ -175,5 +197,29 @@ void MuybridgeReleaseRenderer(void *handle) {
 void *MuybridgeGetDevice(void *handle) {
   MuybridgePlayerHandle *player = (__bridge MuybridgePlayerHandle *)handle;
   return (__bridge void *)player.device;
+}
+
+void MuybridgeSetFrameAvailableCallback(void *handle,
+                                        void (*callback)(void *userData),
+                                        void *userData) {
+  MuybridgePlayerHandle *player = (__bridge MuybridgePlayerHandle *)handle;
+  player.frameAvailableCallback = callback;
+  player.frameAvailableUserData = userData;
+}
+
+CVPixelBufferRef MuybridgeCopyCurrentFrame(void *handle) {
+  MuybridgePlayerHandle *player = (__bridge MuybridgePlayerHandle *)handle;
+  CVPixelBufferRef frame = nullptr;
+  @synchronized(player) {
+    frame = player.currentFrame;
+    if (frame) CVPixelBufferRetain(frame);
+  }
+  return frame;
+}
+
+void *MuybridgeGetAVPlayerItem(void *handle) {
+  MuybridgePlayerHandle *player = (__bridge MuybridgePlayerHandle *)handle;
+  AVPlayerItem *item = [player playerItemBridge];
+  return item ? (__bridge void *)item : nullptr;
 }
 }

@@ -32,6 +32,12 @@ public final class MuybridgePlayer: ObservableObject {
     @Published public private(set) var videoWidth: Int32 = 0
     @Published public private(set) var videoHeight: Int32 = 0
 
+    // MARK: - Public Properties (Flutter plugin hooks)
+
+    /// Called on the decoder thread each time a new frame is stored.
+    /// Callers (e.g. Flutter plugin) must hop to main thread before accessing UIKit/Metal.
+    public var onFrameAvailable: (() -> Void)?
+
     // MARK: - Private Properties
 
     private var handle: UnsafeMutableRawPointer?
@@ -40,6 +46,14 @@ public final class MuybridgePlayer: ObservableObject {
 
     public init() {
         handle = MuybridgeCreatePlayer()
+        guard let h = handle else { return }
+        // Wire the C-level frame callback to onFrameAvailable.
+        // The C callback fires on the decoder's serial dispatch queue.
+        MuybridgeSetFrameAvailableCallback(h, { userData in
+            guard let userData = userData else { return }
+            Unmanaged<MuybridgePlayer>.fromOpaque(userData)
+                .takeUnretainedValue().onFrameAvailable?()
+        }, Unmanaged.passUnretained(self).toOpaque())
     }
 
     deinit {
@@ -130,6 +144,14 @@ public final class MuybridgePlayer: ObservableObject {
     public func releaseRenderer() {
         guard let handle = handle else { return }
         MuybridgeReleaseRenderer(handle)
+    }
+
+    /// Returns a +1 retained CVPixelBuffer for the current frame.
+    /// Caller is responsible for releasing via CVPixelBufferRelease.
+    /// Returns nil if no frame is available or handle has been released.
+    public func copyCurrentFrame() -> CVPixelBuffer? {
+        guard let handle = handle else { return nil }
+        return MuybridgeCopyCurrentFrame(handle)
     }
 
     /// Get Metal device.

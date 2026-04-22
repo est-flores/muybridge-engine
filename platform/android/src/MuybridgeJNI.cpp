@@ -273,4 +273,12 @@ Java_com_muybridge_player_MuybridgePlayer_nativeGetVideoHeight(JNIEnv *env,
   return player->decoder->getMediaInfo().videoHeight;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_com_muybridge_player_MuybridgePlayer_nativeIsEndOfStream(JNIEnv *env,
+                                                              jobject thiz,
+                                                              jlong handle) {
+  auto *player = getPlayer(handle);
+  return (player && player->decoder->isEndOfStream()) ? JNI_TRUE : JNI_FALSE;
+}
+
 } // extern "C"

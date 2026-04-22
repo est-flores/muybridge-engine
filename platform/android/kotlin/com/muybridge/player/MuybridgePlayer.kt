@@ -168,6 +168,12 @@ class MuybridgePlayer {
         }
     }
 
+    /**
+     * Check if end of stream has been reached.
+     */
+    fun isEndOfStream(): Boolean =
+        nativeHandle != 0L && nativeIsEndOfStream(nativeHandle)
+
     companion object {
         init {
             System.loadLibrary("muybridge_android")
@@ -191,4 +197,5 @@ class MuybridgePlayer {
     private external fun nativeSetViewport(handle: Long, width: Int, height: Int)
     private external fun nativeRender(handle: Long, transformMatrix: FloatArray?)
     private external fun nativeReleaseRenderer(handle: Long)
+    private external fun nativeIsEndOfStream(handle: Long): Boolean
 }
