@@ -1,3 +1,4 @@
+#if canImport(UIKit)
 import UIKit
 import MetalKit
 
@@ -111,3 +112,5 @@ public struct VideoPlayerView: UIViewRepresentable {
     }
 }
 #endif
+
+#endif // canImport(UIKit)

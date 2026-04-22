@@ -52,6 +52,18 @@ let package = Package(
             path: "Sources/MuybridgePlayer",
             sources: ["MuybridgePlayer.swift", "MetalVideoView.swift"]
         ),
+
+        .testTarget(
+            name: "MuybridgePlayerTests",
+            dependencies: ["MuybridgePlayer"],
+            path: "Tests/MuybridgePlayerTests"
+        ),
+
+        .executableTarget(
+            name: "MuybridgeDemo",
+            dependencies: ["MuybridgePlayer"],
+            path: "demo/macos"
+        ),
     ],
     cxxLanguageStandard: .cxx17
 )

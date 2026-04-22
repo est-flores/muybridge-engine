@@ -160,6 +160,29 @@ install(DIRECTORY ${MUYBRIDGE_INCLUDE_DIR}/muybridge
 )
 
 #-------------------------------------------------------------------------------
+# Tests
+#-------------------------------------------------------------------------------
+
+option(BUILD_TESTS "Build unit tests" OFF)
+
+if(BUILD_TESTS)
+    enable_testing()
+
+    include(FetchContent)
+    FetchContent_Declare(
+        googletest
+        URL https://github.com/google/googletest/archive/v1.14.0.zip
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+
+    add_subdirectory(tests)
+endif()
+
+#-------------------------------------------------------------------------------
 # Summary
 #-------------------------------------------------------------------------------
 
