@@ -44,6 +44,10 @@ android {
     kotlinOptions {
         jvmTarget = '17'
     }
+
+    sourceSets {
+        main.kotlin.srcDirs += ['../../platform/android/kotlin']
+    }
 }
 
 repositories {
@@ -54,4 +58,5 @@ repositories {
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    implementation 'androidx.annotation:annotation:1.7.0'
 }

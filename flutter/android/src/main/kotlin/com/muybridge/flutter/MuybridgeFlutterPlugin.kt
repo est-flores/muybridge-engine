@@ -149,7 +149,7 @@ private class PlayerEntry(
     private var eosJob: Job? = null
 
     fun emit(state: String) {
-        streamHandler.sink?.invoke(mapOf("state" to state))
+        streamHandler.sink?.success(mapOf("state" to state))
     }
 
     fun startEosWatcher() {

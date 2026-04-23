@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 project(muybridge_android)
 
-set(ENGINE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../../..")
+set(ENGINE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../..")
 
 add_library(muybridge_android SHARED
     ${ENGINE_ROOT}/src/core/Clock.cpp
