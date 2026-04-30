@@ -157,7 +157,14 @@ public final class MuybridgeFlutterPlugin: NSObject, FlutterPlugin {
             guard let self = self else { return }
             let ok = MuybridgeOpenMedia(entry.handle, url)
 
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                // Guard against dispose() being called while load was in flight.
+                // If the entry is gone, entry.handle is freed — don't touch it.
+                guard self.players[playerId] != nil else {
+                    result(false)
+                    return
+                }
                 if ok {
                     self.installKVO(entry: entry)
                     self.emit(entry: entry, state: "ready")
@@ -203,6 +210,10 @@ public final class MuybridgeFlutterPlugin: NSObject, FlutterPlugin {
             entry.eosObserver = nil
         }
         registrar.textures().unregisterTexture(entry.textureId)
+        // Stop the decode loop synchronously before releasing. This ensures
+        // the loop has fully exited (via dispatch_sync inside stop()) before
+        // ARC deallocs the player, preventing a use-after-free race.
+        MuybridgePause(entry.handle)
         MuybridgeReleasePlayer(entry.handle)
     }
 

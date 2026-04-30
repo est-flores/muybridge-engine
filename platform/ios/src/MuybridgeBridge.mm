@@ -80,6 +80,14 @@
 }
 
 - (void)dealloc {
+  // Balance the Unmanaged.passRetained() call made when the Swift plugin
+  // registered the frame-available callback. Without this release the
+  // FrameCallbackContext object leaks on every player dispose cycle.
+  if (_frameAvailableUserData) {
+    CFRelease(_frameAvailableUserData);
+    _frameAvailableUserData = nullptr;
+  }
+
   if (_currentFrame) {
     CVPixelBufferRelease(_currentFrame);
     _currentFrame = nullptr;

@@ -27,7 +27,7 @@ class MuybridgePlayer {
         IDLE, LOADING, BUFFERING, PLAYING, PAUSED, SEEKING, ERROR
     }
 
-    private var nativeHandle: Long = 0
+    @Volatile private var nativeHandle: Long = 0
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val _state = MutableStateFlow(State.IDLE)

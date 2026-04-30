@@ -156,7 +156,7 @@ private class PlayerEntry(
         eosJob?.cancel()
         eosJob = scope.launch(Dispatchers.IO) {
             while (true) {
-                delay(500)
+                delay(100)
                 if (player.isEndOfStream()) {
                     scope.launch(Dispatchers.Main) { emit("ended") }
                     break

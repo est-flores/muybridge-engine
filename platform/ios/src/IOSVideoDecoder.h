@@ -142,6 +142,7 @@ private:
   // Threading
   std::mutex mutex_;
   dispatch_queue_t decodeQueue_;
+  uint8_t decodeQueueMarker_;  // address used as dispatch-specific key for deadlock detection
 
   // Callbacks
   FrameCallback frameCallback_;

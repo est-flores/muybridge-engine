@@ -7,10 +7,12 @@ IOSVideoDecoder::IOSVideoDecoder()
     : asset_(nil), assetReader_(nil), videoOutput_(nil),
       player_(nil), playerItem_(nil), playerVideoOutput_(nil), playerReadyObserver_(nil),
       decompressionSession_(nullptr), formatDescription_(nullptr),
-      decodeQueue_(nil), useAVPlayer_(false) {
+      decodeQueue_(nil), useAVPlayer_(false), decodeQueueMarker_(0) {
 
   decodeQueue_ =
       dispatch_queue_create("com.muybridge.decode", DISPATCH_QUEUE_SERIAL);
+  // Tag this queue so dispatch_sync calls can detect if they're already on it.
+  dispatch_queue_set_specific(decodeQueue_, &decodeQueueMarker_, &decodeQueueMarker_, nullptr);
   MUY_LOGI("IOSVideoDecoder created");
 }
 
@@ -53,104 +55,78 @@ bool IOSVideoDecoder::openWithAVPlayer(NSURL *url) {
   __block NSString *errorMessage = nil;
   __block MediaInfo capturedMediaInfo = {};
 
-  // Create player item with asset for better control
-  AVURLAsset *asset = [AVURLAsset assetWithURL:url];
-  AVPlayerItem *playerItem = [AVPlayerItem playerItemWithAsset:asset];
-  AVPlayer *player = [AVPlayer playerWithPlayerItem:playerItem];
+  // AVPlayer objects MUST be created on the main thread. Creating them on a
+  // background thread and then running [[NSRunLoop mainRunLoop] runUntilDate:]
+  // from that thread is undefined behaviour — it corrupts ARC retain counts
+  // and causes EXC_BAD_ACCESS. Use dispatch_sync to create on main, then wait
+  // on a semaphore (which does NOT block the main runloop) from the caller.
+  __block AVURLAsset *createdAsset = nil;
+  __block AVPlayer *createdPlayer = nil;
+  __block AVPlayerItem *createdPlayerItem = nil;
+  __block AVPlayerItemVideoOutput *createdVideoOutput = nil;
 
-  // YES = AVPlayer waits until it has enough buffer to play without stalling.
-  // This is required for smooth playback. Setting it to NO causes freezes when
-  // the network can't keep up with playback, which is worse than a slow start.
-  // The TTFF delay seen here is network latency, not renderer overhead.
-  if (@available(iOS 10.0, *)) {
-    player.automaticallyWaitsToMinimizeStalling = YES;
-    // Hint: target 2s of forward buffer. On fast networks this is lower than
-    // AVPlayer's default heuristic, so it starts sooner. On slow networks it
-    // falls back to whatever the network can provide.
-    playerItem.preferredForwardBufferDuration = 2.0;
-  }
-  
-  // Create video output with pixel format for Metal - MUST include Metal compatibility key
-  NSDictionary *outputSettings = @{
-    (NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
-    (NSString *)kCVPixelBufferMetalCompatibilityKey : @YES,
-    (NSString *)kCVPixelBufferIOSurfacePropertiesKey : @{}
-  };
-  AVPlayerItemVideoOutput *videoOutput = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:outputSettings];
-  [playerItem addOutput:videoOutput];
-  
-  // Use dispatch group and notification for better observation
-  dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-  
-  // Register for notifications
-  __block id failureObserver = nil;
-  __block id readyObserver = nil;
-  
-  // Observe for failed to play to end  
-  failureObserver = [[NSNotificationCenter defaultCenter] 
-    addObserverForName:AVPlayerItemFailedToPlayToEndTimeNotification
-    object:playerItem
-    queue:[NSOperationQueue mainQueue]
-    usingBlock:^(NSNotification *note) {
-      NSError *error = note.userInfo[AVPlayerItemFailedToPlayToEndTimeErrorKey];
-      errorMessage = error.localizedDescription;
-      MUY_LOGE("Player failed notification: %s", [errorMessage UTF8String]);
-    }];
-  
-  // Log player item error if any
-  if (playerItem.error) {
-    MUY_LOGE("Initial player item error: %s", [playerItem.error.localizedDescription UTF8String]);
-  }
-  
-  // Start playback to trigger buffering (will pause after ready)
-  [player play];
+  dispatch_sync(dispatch_get_main_queue(), ^{
+    @autoreleasepool {
+      createdAsset = [AVURLAsset assetWithURL:url];
+      createdPlayerItem = [AVPlayerItem playerItemWithAsset:createdAsset];
+      createdPlayer = [AVPlayer playerWithPlayerItem:createdPlayerItem];
+
+      if (@available(iOS 10.0, *)) {
+        createdPlayer.automaticallyWaitsToMinimizeStalling = YES;
+        createdPlayerItem.preferredForwardBufferDuration = 2.0;
+      }
+
+      NSDictionary *outputSettings = @{
+        (NSString *)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+        (NSString *)kCVPixelBufferMetalCompatibilityKey : @YES,
+        (NSString *)kCVPixelBufferIOSurfacePropertiesKey : @{}
+      };
+      createdVideoOutput = [[AVPlayerItemVideoOutput alloc]
+          initWithPixelBufferAttributes:outputSettings];
+      [createdPlayerItem addOutput:createdVideoOutput];
+
+      [createdPlayer play];
+    }
+  });
+
   LOAD_PHASE("AVPlayer.play() called — waiting for player ready (network)...");
 
-  // Poll for ready status directly on background queue (no nested dispatch).
-  // 16ms interval (~1 frame at 60fps) keeps setup overhead under 16ms once
-  // the player is ready, vs. the previous 100ms which added up to 100ms wait.
+  // Poll playerItem.status from a separate background thread. The calling
+  // thread (loadQueue) waits on the semaphore below; the main thread remains
+  // free to run its runloop and deliver AVPlayer KVO / network callbacks.
+  dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     @autoreleasepool {
       int attempts = 0;
-      const int maxAttempts = 1875; // 30 seconds at 16ms intervals
-      bool loggedFirstStatusChange = false;
+      const int maxAttempts = 1875; // 30 s at 16 ms intervals
 
-      while (playerItem.status == AVPlayerItemStatusUnknown && attempts < maxAttempts) {
-        if (playerItem.error) {
-          errorMessage = playerItem.error.localizedDescription;
+      while (createdPlayerItem.status == AVPlayerItemStatusUnknown && attempts < maxAttempts) {
+        if (createdPlayerItem.error) {
+          errorMessage = createdPlayerItem.error.localizedDescription;
           MUY_LOGE("Player item error during load: %s", [errorMessage UTF8String]);
           dispatch_semaphore_signal(semaphore);
           return;
         }
 
-        [NSThread sleepForTimeInterval:0.016]; // 16ms — 1 frame at 60fps
+        [NSThread sleepForTimeInterval:0.016];
         attempts++;
 
-        if (!loggedFirstStatusChange && playerItem.status != AVPlayerItemStatusUnknown) {
-          LOAD_PHASE("player status changed from Unknown → %ld", (long)playerItem.status);
-          loggedFirstStatusChange = true;
-        }
-
-        // Warn every 2 seconds if still waiting — this is always network time.
-        // Common causes: CDN latency, or MOV/MP4 with moov atom at end of file
-        // (requires a second HTTP range request before playback can start).
-        // Fix: re-encode with `ffmpeg -movflags +faststart` to move moov to front.
         if (attempts % 125 == 0) {
           LOAD_PHASE("still waiting — %.1fs (network). MOV with end-moov? Try MP4+faststart.",
                      attempts * 0.016);
         }
       }
 
-      if (playerItem.status == AVPlayerItemStatusFailed) {
-        errorMessage = playerItem.error.localizedDescription;
+      if (createdPlayerItem.status == AVPlayerItemStatusFailed) {
+        errorMessage = createdPlayerItem.error.localizedDescription;
         if (!errorMessage) errorMessage = @"Player item failed";
         LOAD_PHASE("ERROR: player item failed — %s", [errorMessage UTF8String]);
-        MUY_LOGE("Player item failed: %s", [errorMessage UTF8String]);
         dispatch_semaphore_signal(semaphore);
         return;
       }
 
-      if (playerItem.status != AVPlayerItemStatusReadyToPlay) {
+      if (createdPlayerItem.status != AVPlayerItemStatusReadyToPlay) {
         LOAD_PHASE("ERROR: timeout waiting for player ready (30s)");
         errorMessage = @"Player item not ready after timeout";
         dispatch_semaphore_signal(semaphore);
@@ -159,15 +135,13 @@ bool IOSVideoDecoder::openWithAVPlayer(NSURL *url) {
 
       LOAD_PHASE("player ready — loading track metadata (renderer)...");
 
-      // Pause now that we're ready (will resume when start() is called)
-      dispatch_async(dispatch_get_main_queue(), ^{
-        [player pause];
-      });
+      dispatch_async(dispatch_get_main_queue(), ^{ [createdPlayer pause]; });
 
-      // Load track properties asynchronously before accessing them
-      [asset loadValuesAsynchronouslyForKeys:@[@"tracks", @"duration"] completionHandler:^{
+      [createdAsset loadValuesAsynchronouslyForKeys:@[@"tracks", @"duration"]
+                                 completionHandler:^{
         LOAD_PHASE("tracks key loaded — reading video track properties (renderer)...");
-        NSArray<AVAssetTrack *> *videoTracks = [asset tracksWithMediaType:AVMediaTypeVideo];
+        NSArray<AVAssetTrack *> *videoTracks =
+            [createdAsset tracksWithMediaType:AVMediaTypeVideo];
 
         if (videoTracks.count == 0) {
           LOAD_PHASE("ERROR: no video tracks found");
@@ -178,14 +152,15 @@ bool IOSVideoDecoder::openWithAVPlayer(NSURL *url) {
 
         AVAssetTrack *videoTrack = videoTracks.firstObject;
 
-        // Load track-specific properties
-        [videoTrack loadValuesAsynchronouslyForKeys:@[@"naturalSize", @"nominalFrameRate"] completionHandler:^{
+        [videoTrack loadValuesAsynchronouslyForKeys:@[@"naturalSize", @"nominalFrameRate"]
+                                 completionHandler:^{
           CGSize size = videoTrack.naturalSize;
-
-          capturedMediaInfo.videoWidth = static_cast<int32_t>(size.width);
+          capturedMediaInfo.videoWidth  = static_cast<int32_t>(size.width);
           capturedMediaInfo.videoHeight = static_cast<int32_t>(size.height);
-          capturedMediaInfo.frameRate = videoTrack.nominalFrameRate > 0 ? videoTrack.nominalFrameRate : 30.0f;
-          capturedMediaInfo.durationNanos = static_cast<int64_t>(CMTimeGetSeconds(asset.duration) * kNanosPerSecond);
+          capturedMediaInfo.frameRate   = videoTrack.nominalFrameRate > 0
+                                          ? videoTrack.nominalFrameRate : 30.0f;
+          capturedMediaInfo.durationNanos =
+              static_cast<int64_t>(CMTimeGetSeconds(createdAsset.duration) * kNanosPerSecond);
           capturedMediaInfo.hasVideo = true;
 
           LOAD_PHASE("video info: %dx%d @ %.1ffps, duration: %.1fs — setup complete",
@@ -195,8 +170,7 @@ bool IOSVideoDecoder::openWithAVPlayer(NSURL *url) {
                      (double)capturedMediaInfo.durationNanos / kNanosPerSecond);
 
           MUY_LOGI("Video: %dx%d @ %.1f fps, duration: %.2fs",
-                   capturedMediaInfo.videoWidth,
-                   capturedMediaInfo.videoHeight,
+                   capturedMediaInfo.videoWidth, capturedMediaInfo.videoHeight,
                    capturedMediaInfo.frameRate,
                    (double)capturedMediaInfo.durationNanos / kNanosPerSecond);
 
@@ -206,45 +180,38 @@ bool IOSVideoDecoder::openWithAVPlayer(NSURL *url) {
       }];
     }
   });
-  
-  // Wait for setup while keeping main runloop alive (AVPlayer needs it!)
-  // We cannot use dispatch_semaphore_wait on main thread as it blocks AVPlayer
-  NSDate *timeoutDate = [NSDate dateWithTimeIntervalSinceNow:60.0];
-  
-  while (!setupSuccess && !errorMessage && [[NSDate date] compare:timeoutDate] == NSOrderedAscending) {
-    // Run the runloop for a short interval to let AVPlayer process network events
-    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
-  }
-  
-  // Cleanup observer
-  [[NSNotificationCenter defaultCenter] removeObserver:failureObserver];
-  
-  if (!setupSuccess) {
-    if (!errorMessage) {
-      MUY_LOGE("Timeout waiting for player to be ready (60s)");
-    } else {
-      MUY_LOGE("AVPlayer setup failed: %s", [errorMessage UTF8String]);
-    }
+
+  // Wait on the background (loadQueue) thread. The main thread is NOT blocked,
+  // so AVPlayer's runloop sources continue firing normally.
+  dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC);
+  if (dispatch_semaphore_wait(semaphore, timeout) != 0) {
+    MUY_LOGE("Timeout waiting for AVPlayer setup (30s)");
+    dispatch_async(dispatch_get_main_queue(), ^{ [createdPlayer pause]; });
     return false;
   }
-  
-  // Store objects
+
+  if (!setupSuccess) {
+    MUY_LOGE("AVPlayer setup failed: %s", errorMessage ? [errorMessage UTF8String] : "unknown");
+    dispatch_async(dispatch_get_main_queue(), ^{ [createdPlayer pause]; });
+    return false;
+  }
+
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    asset_ = (__bridge_retained void *)asset;
-    player_ = (__bridge_retained void *)player;
-    playerItem_ = (__bridge_retained void *)playerItem;
-    playerVideoOutput_ = (__bridge_retained void *)videoOutput;
-    mediaInfo_ = capturedMediaInfo;
+    asset_             = (__bridge_retained void *)createdAsset;
+    player_            = (__bridge_retained void *)createdPlayer;
+    playerItem_        = (__bridge_retained void *)createdPlayerItem;
+    playerVideoOutput_ = (__bridge_retained void *)createdVideoOutput;
+    mediaInfo_         = capturedMediaInfo;
   }
-  
+
   MUY_LOGI("AVPlayer ready for playback");
   MUY_TTFF_MILESTONE("asset_configured");
-  
+
   if (mediaInfoCallback_) {
     mediaInfoCallback_(mediaInfo_);
   }
-  
+
   return true;
 }
 
@@ -402,65 +369,69 @@ void IOSVideoDecoder::start() {
 void IOSVideoDecoder::playerDecodeLoop() {
   @autoreleasepool {
     MUY_LOGI("Player decode loop started");
-    
+
     AVPlayer *player = (__bridge AVPlayer *)player_;
     AVPlayerItemVideoOutput *videoOutput = (__bridge AVPlayerItemVideoOutput *)playerVideoOutput_;
-    
+
     CMTime frameInterval = CMTimeMake(1, static_cast<int32_t>(mediaInfo_.frameRate > 0 ? mediaInfo_.frameRate : 30));
-    
+    bool logged = false;
+
     while (running_.load()) {
       @autoreleasepool {
         CMTime currentTime = player.currentTime;
-        
+
         if ([videoOutput hasNewPixelBufferForItemTime:currentTime]) {
           CMTime actualTime;
           CVPixelBufferRef pixelBuffer = [videoOutput copyPixelBufferForItemTime:currentTime itemTimeForDisplay:&actualTime];
-          
+
           if (pixelBuffer) {
-            // Debug: Log pixel buffer info on first frame
-            static bool logged = false;
             if (!logged) {
               OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
               size_t width = CVPixelBufferGetWidth(pixelBuffer);
               size_t height = CVPixelBufferGetHeight(pixelBuffer);
               size_t planeCount = CVPixelBufferGetPlaneCount(pixelBuffer);
               Boolean hasIOSurface = (CVPixelBufferGetIOSurface(pixelBuffer) != nullptr);
-              
+
               char formatStr[5] = {0};
               formatStr[0] = (pixelFormat >> 24) & 0xFF;
               formatStr[1] = (pixelFormat >> 16) & 0xFF;
               formatStr[2] = (pixelFormat >> 8) & 0xFF;
               formatStr[3] = pixelFormat & 0xFF;
-              
+
               MUY_LOGI("First frame pixel buffer: %zux%zu, format: '%s' (0x%08X), planes: %zu, IOSurface: %s",
                        width, height, formatStr, pixelFormat, planeCount,
                        hasIOSurface ? "YES" : "NO");
               logged = true;
             }
-            
+
             Timestamp ptsNanos = static_cast<Timestamp>(CMTimeGetSeconds(actualTime) * kNanosPerSecond);
-            
+
             if (frameCallback_) {
               frameCallback_(pixelBuffer, ptsNanos);
             }
-            
+
             CVPixelBufferRelease(pixelBuffer);
           }
         }
-        
-        // Check if playback ended
+
+        // Check if playback ended — skip for indefinite/invalid durations (live streams).
+        // EOS for finite content is also signalled via AVPlayerItemDidPlayToEndTime
+        // notification, but checking here lets the loop exit cleanly without busy-spinning.
         AVPlayerItem *item = (__bridge AVPlayerItem *)playerItem_;
-        if (CMTimeCompare(currentTime, item.duration) >= 0) {
+        CMTime duration = item.duration;
+        if (CMTIME_IS_VALID(duration) && !CMTIME_IS_INDEFINITE(duration) &&
+            CMTimeCompare(currentTime, duration) >= 0) {
           endOfStream_.store(true);
+          running_.store(false);
           MUY_LOGI("End of stream");
           break;
         }
-        
+
         // Sleep for approximately one frame duration
         [NSThread sleepForTimeInterval:CMTimeGetSeconds(frameInterval) * 0.5];
       }
     }
-    
+
     MUY_LOGI("Player decode loop exited");
   }
 }
@@ -480,6 +451,7 @@ void IOSVideoDecoder::decodeLoop() {
           AVAssetReader *reader = (__bridge AVAssetReader *)assetReader_;
           if (reader.status == AVAssetReaderStatusCompleted) {
             endOfStream_.store(true);
+            running_.store(false);
             MUY_LOGI("End of stream");
           }
           break;
@@ -492,6 +464,7 @@ void IOSVideoDecoder::decodeLoop() {
         if (frameCallback_ && pixelBuffer) {
           CVPixelBufferRetain(pixelBuffer);
           frameCallback_(pixelBuffer, ptsNanos);
+          CVPixelBufferRelease(pixelBuffer);
         }
 
         CFRelease(sampleBuffer);
@@ -503,11 +476,15 @@ void IOSVideoDecoder::decodeLoop() {
 }
 
 void IOSVideoDecoder::stop() {
+  if (!running_.load()) {
+    return;
+  }
+
   running_.store(false);
 
   @autoreleasepool {
     std::lock_guard<std::mutex> lock(mutex_);
-    
+
     if (useAVPlayer_) {
       AVPlayer *player = (__bridge AVPlayer *)player_;
       [player pause];
@@ -515,6 +492,15 @@ void IOSVideoDecoder::stop() {
       AVAssetReader *reader = (__bridge AVAssetReader *)assetReader_;
       [reader cancelReading];
     }
+  }
+
+  // Block until the decode loop actually exits. The queue is serial so this
+  // no-op block cannot run until the loop function returns. Without this,
+  // release() would CFRelease ObjC objects while the loop is still using them.
+  // Skip if already on decodeQueue_ to avoid deadlock (e.g. dealloc triggered
+  // from inside a callback closure that held the last strong reference).
+  if (!dispatch_get_specific(&decodeQueueMarker_)) {
+    dispatch_sync(decodeQueue_, ^{});
   }
 }
 
@@ -535,6 +521,14 @@ void IOSVideoDecoder::seek(Timestamp positionNanos) {
 
 void IOSVideoDecoder::release() {
   stop();
+
+  // Unconditional drain: if the decode loop exited on its own (EOS set
+  // running_=false), stop() returned early but the loop block may not have
+  // fully returned yet. Ensure the queue is idle before freeing ObjC objects.
+  // Skip if already on decodeQueue_ to avoid deadlock.
+  if (!dispatch_get_specific(&decodeQueueMarker_)) {
+    dispatch_sync(decodeQueue_, ^{});
+  }
 
   @autoreleasepool {
     std::lock_guard<std::mutex> lock(mutex_);
