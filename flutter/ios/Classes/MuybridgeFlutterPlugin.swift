@@ -15,8 +15,7 @@ final class MuybridgeFlutterTexture: NSObject, FlutterTexture {
 
     func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
         guard let buf = MuybridgeCopyCurrentFrame(handle) else { return nil }
-        // Bridge already did +1 retain; pass it to Flutter (.passRetained keeps ownership transfer).
-        return .passRetained(buf)
+        return Unmanaged.passRetained(buf)
     }
 }
 
@@ -213,7 +212,7 @@ public final class MuybridgeFlutterPlugin: NSObject, FlutterPlugin {
         guard let itemPtr = MuybridgeGetAVPlayerItem(entry.handle) else { return }
         let playerItem = Unmanaged<AVPlayerItem>.fromOpaque(itemPtr).takeUnretainedValue()
 
-        let statusObs = playerItem.observe(\.status, options: [.new]) { [weak self, weak entry] item, _ in
+        let statusObs = playerItem.observe(\.status, options: [.new]) { [weak self, weak entry] (item: AVPlayerItem, _: NSKeyValueObservedChange<AVPlayerItem.Status>) in
             guard let self = self, let entry = entry else { return }
             switch item.status {
             case .readyToPlay:
@@ -225,7 +224,7 @@ public final class MuybridgeFlutterPlugin: NSObject, FlutterPlugin {
             }
         }
 
-        let bufferObs = playerItem.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) { [weak self, weak entry] item, _ in
+        let bufferObs = playerItem.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) { [weak self, weak entry] (item: AVPlayerItem, _: NSKeyValueObservedChange<Bool>) in
             guard let self = self, let entry = entry else { return }
             if item.isPlaybackLikelyToKeepUp {
                 self.emit(entry: entry, state: "playing")

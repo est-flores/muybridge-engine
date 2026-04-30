@@ -10,21 +10,19 @@ Pod::Spec.new do |s|
   s.ios.deployment_target = '13.0'
 
   s.source_files = [
-    'Classes/**/*.swift',
-    '../../src/core/*.cpp',
-    '../../platform/ios/src/*.{mm,h}',
-    '../../include/**/*.h',
+    'Classes/*.{swift,h}',
+    'Classes/engine_core/*.cpp',
+    'Classes/engine_ios/*.{mm,h}',
   ]
 
   s.public_header_files = [
-    '../../include/**/*.h',
-    '../../platform/ios/src/MuybridgeBridge.h',
+    'Classes/MuybridgeBridge.h',
   ]
 
   s.pod_target_xcconfig = {
     'HEADER_SEARCH_PATHS' => [
-      '$(PODS_TARGET_SRCROOT)/../../include',
-      '$(PODS_TARGET_SRCROOT)/../../platform/ios/src',
+      '$(PODS_TARGET_SRCROOT)/Classes/engine_include',
+      '$(PODS_TARGET_SRCROOT)/Classes/engine_ios',
     ].join(' '),
     'CLANG_CXX_LANGUAGE_STANDARD' => 'c++17',
     'GCC_PREPROCESSOR_DEFINITIONS' => 'MUYBRIDGE_PLATFORM_IOS=1',
