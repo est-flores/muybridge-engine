@@ -60,6 +60,11 @@ DerivedData/
 /platform/android/.cxx/
 /platform/android/local.properties
 
+# Flutter Android plugin build artifacts
+flutter/android/.cxx/
+flutter/android/build/
+flutter/android/local.properties
+
 #-------------------------------------------------------------------------------
 # Swift Package Manager
 #-------------------------------------------------------------------------------
