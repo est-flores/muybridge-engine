@@ -13,7 +13,7 @@ IOSVideoDecoder::IOSVideoDecoder()
       dispatch_queue_create("com.muybridge.decode", DISPATCH_QUEUE_SERIAL);
   // Tag this queue so dispatch_sync calls can detect if they're already on it.
   dispatch_queue_set_specific(decodeQueue_, &decodeQueueMarker_, &decodeQueueMarker_, nullptr);
-  MUY_LOGI("IOSVideoDecoder created");
+  fprintf(stderr, "[init ][%p] IOSVideoDecoder created\n", this);
 }
 
 IOSVideoDecoder::~IOSVideoDecoder() { release(); }
@@ -41,8 +41,9 @@ bool IOSVideoDecoder::open(const std::string &url) {
 // Terminal-visible timing log for the loading pipeline.
 // MUY_LOGI goes to os_log (Console.app only); these prints go to stderr so
 // they appear in the terminal during `swift run`.
+// %p prefix makes each player instance identifiable across concurrent logs.
 #define LOAD_PHASE(fmt, ...) \
-  fprintf(stderr, "[load] %8.1fms  " fmt "\n", muybridge::log::elapsedMillis(), ##__VA_ARGS__)
+  fprintf(stderr, "[load][%p] %8.1fms  " fmt "\n", this, muybridge::log::elapsedMillis(), ##__VA_ARGS__)
 
 // Network URL handling using AVPlayer + AVPlayerItemVideoOutput
 bool IOSVideoDecoder::openWithAVPlayer(NSURL *url) {
@@ -368,7 +369,7 @@ void IOSVideoDecoder::start() {
 
 void IOSVideoDecoder::playerDecodeLoop() {
   @autoreleasepool {
-    MUY_LOGI("Player decode loop started");
+    fprintf(stderr, "[loop ][%p] player decode loop started\n", this);
 
     AVPlayer *player = (__bridge AVPlayer *)player_;
     AVPlayerItemVideoOutput *videoOutput = (__bridge AVPlayerItemVideoOutput *)playerVideoOutput_;
@@ -432,13 +433,13 @@ void IOSVideoDecoder::playerDecodeLoop() {
       }
     }
 
-    MUY_LOGI("Player decode loop exited");
+    fprintf(stderr, "[loop ][%p] player decode loop exited\n", this);
   }
 }
 
 void IOSVideoDecoder::decodeLoop() {
   @autoreleasepool {
-    MUY_LOGI("Decode loop started");
+    fprintf(stderr, "[loop ][%p] asset-reader decode loop started\n", this);
 
     AVAssetReaderTrackOutput *output =
         (__bridge AVAssetReaderTrackOutput *)videoOutput_;
@@ -471,12 +472,17 @@ void IOSVideoDecoder::decodeLoop() {
       }
     }
 
-    MUY_LOGI("Decode loop exited");
+    fprintf(stderr, "[loop ][%p] asset-reader decode loop exited\n", this);
   }
 }
 
 void IOSVideoDecoder::stop() {
-  if (!running_.load()) {
+  bool wasRunning = running_.load();
+  fprintf(stderr, "[stop ][%p] called — running=%s, onDecodeQueue=%s\n",
+          this, wasRunning ? "yes" : "no",
+          dispatch_get_specific(&decodeQueueMarker_) ? "yes" : "no");
+
+  if (!wasRunning) {
     return;
   }
 
@@ -520,6 +526,7 @@ void IOSVideoDecoder::seek(Timestamp positionNanos) {
 }
 
 void IOSVideoDecoder::release() {
+  fprintf(stderr, "[rel  ][%p] release() start\n", this);
   stop();
 
   // Unconditional drain: if the decode loop exited on its own (EOS set
@@ -529,6 +536,7 @@ void IOSVideoDecoder::release() {
   if (!dispatch_get_specific(&decodeQueueMarker_)) {
     dispatch_sync(decodeQueue_, ^{});
   }
+  fprintf(stderr, "[rel  ][%p] decode queue drained — freeing ObjC objects\n", this);
 
   @autoreleasepool {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -576,7 +584,7 @@ void IOSVideoDecoder::release() {
     }
 
     useAVPlayer_ = false;
-    MUY_LOGI("Decoder released");
+    fprintf(stderr, "[rel  ][%p] release() done — ObjC objects freed\n", this);
   }
 }
 

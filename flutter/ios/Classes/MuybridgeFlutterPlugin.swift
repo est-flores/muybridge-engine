@@ -210,11 +210,20 @@ public final class MuybridgeFlutterPlugin: NSObject, FlutterPlugin {
             entry.eosObserver = nil
         }
         registrar.textures().unregisterTexture(entry.textureId)
-        // Stop the decode loop synchronously before releasing. This ensures
-        // the loop has fully exited (via dispatch_sync inside stop()) before
-        // ARC deallocs the player, preventing a use-after-free race.
-        MuybridgePause(entry.handle)
-        MuybridgeReleasePlayer(entry.handle)
+
+        // IMPORTANT: post the native stop+release to loadQueue instead of calling
+        // them here on the main thread. openWithAVPlayer() blocks loadQueue on a
+        // dispatch_semaphore_wait while polling AVPlayer status. If MuybridgePause/
+        // MuybridgeReleasePlayer run on the main thread concurrently with that wait,
+        // the IOSVideoDecoder is freed while openWithAVPlayer is still using `this`
+        // (writing to mutex_, asset_, playerItem_ etc.) → use-after-free → crash on
+        // the decode queue. By posting to the same serial loadQueue, we guarantee
+        // the release block only runs after any in-flight MuybridgeOpenMedia finishes.
+        let handle = entry.handle
+        loadQueue.async {
+            MuybridgePause(handle)
+            MuybridgeReleasePlayer(handle)
+        }
     }
 
     // MARK: - KVO / notifications
