@@ -101,27 +101,36 @@ public final class MuybridgePlayer: ObservableObject {
 
     // MARK: - Playback Control
 
-    /// Load media from URL.
+    /// Load media from URL. Safe to call from a background thread.
     @discardableResult
     public func load(url: String) -> Bool {
         guard let handle = handle else { return false }
 
-        state = .loading
+        publishOnMain { self.state = .loading }
 
         let result = url.withCString { cString in
             MuybridgeOpenMedia(handle, cString)
         }
 
         if result {
-            duration = MuybridgeGetDuration(handle)
-            videoWidth = MuybridgeGetVideoWidth(handle)
-            videoHeight = MuybridgeGetVideoHeight(handle)
-            state = .buffering
+            let dur = MuybridgeGetDuration(handle)
+            let w   = MuybridgeGetVideoWidth(handle)
+            let h   = MuybridgeGetVideoHeight(handle)
+            publishOnMain {
+                self.duration    = dur
+                self.videoWidth  = w
+                self.videoHeight = h
+                self.state       = .buffering
+            }
         } else {
-            state = .error
+            publishOnMain { self.state = .error }
         }
 
         return result
+    }
+
+    private func publishOnMain(_ block: @escaping () -> Void) {
+        if Thread.isMainThread { block() } else { DispatchQueue.main.async(execute: block) }
     }
 
     /// Start playback.
