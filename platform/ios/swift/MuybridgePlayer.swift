@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import Foundation
 import Metal
@@ -38,9 +39,16 @@ public final class MuybridgePlayer: ObservableObject {
     /// Callers (e.g. Flutter plugin) must hop to main thread before accessing UIKit/Metal.
     public var onFrameAvailable: (() -> Void)?
 
+    // MARK: - Public Properties (loop)
+
+    public var loopEnabled: Bool = false {
+        didSet { configureLoopObserver() }
+    }
+
     // MARK: - Private Properties
 
     private var handle: UnsafeMutableRawPointer?
+    private var eosObserver: NSObjectProtocol?
 
     // MARK: - Lifecycle
 
@@ -62,10 +70,32 @@ public final class MuybridgePlayer: ObservableObject {
 
     /// Release all resources.
     public func release() {
+        if let obs = eosObserver {
+            NotificationCenter.default.removeObserver(obs)
+            eosObserver = nil
+        }
         if let handle = handle {
             MuybridgeReleasePlayer(handle)
             self.handle = nil
             state = .idle
+        }
+    }
+
+    private func configureLoopObserver() {
+        if let obs = eosObserver {
+            NotificationCenter.default.removeObserver(obs)
+            eosObserver = nil
+        }
+        guard loopEnabled, let handle = handle,
+              let itemPtr = MuybridgeGetAVPlayerItem(handle) else { return }
+        let item = Unmanaged<AnyObject>.fromOpaque(itemPtr).takeUnretainedValue()
+        eosObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.didPlayToEndTimeNotification,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            self?.seek(to: 0)
+            self?.play()
         }
     }
 
@@ -151,7 +181,7 @@ public final class MuybridgePlayer: ObservableObject {
     /// Returns nil if no frame is available or handle has been released.
     public func copyCurrentFrame() -> CVPixelBuffer? {
         guard let handle = handle else { return nil }
-        return MuybridgeCopyCurrentFrame(handle)
+        return MuybridgeCopyCurrentFrame(handle)?.takeRetainedValue()
     }
 
     /// Get Metal device.
