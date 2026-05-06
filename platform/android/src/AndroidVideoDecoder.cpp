@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <vector>
 
 namespace muybridge {
 namespace android {
@@ -181,6 +182,11 @@ bool AndroidVideoDecoder::configureAudioCodec(AMediaFormat *format) {
     MUY_LOGE("Failed to create audio codec for %s", mime);
     return false;
   }
+  // Hint the decoder to output PCM_I16 (encoding=2). Hardware decoders on many
+  // devices default to PCM_FLOAT (encoding=4); without this hint, numFrames
+  // is calculated with the wrong bytes-per-sample and audio plays at half speed.
+  AMediaFormat_setInt32(format, "pcm-encoding", 2);
+
   media_status_t status =
       AMediaCodec_configure(audioCodec_, format, nullptr, nullptr, 0);
   if (status != AMEDIA_OK) {
@@ -205,11 +211,22 @@ bool AndroidVideoDecoder::openAudioStream() {
   AAudioStreamBuilder_setSampleRate(builder, audioSampleRate_);
   AAudioStreamBuilder_setChannelCount(builder, audioChannelCount_);
   AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
+  AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
+#if __ANDROID_API__ >= 28
+  AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_MEDIA);
+  AAudioStreamBuilder_setContentType(builder, AAUDIO_CONTENT_TYPE_MOVIE);
+#endif
   AAudioStreamBuilder_setPerformanceMode(builder,
                                          AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
-  AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
 
   result = AAudioStreamBuilder_openStream(builder, &audioStream_);
+  if (result != AAUDIO_OK) {
+    MUY_LOGW("Low-latency AAudio stream failed (%s), retrying with NONE mode",
+             AAudio_convertResultToText(result));
+    AAudioStreamBuilder_setPerformanceMode(builder,
+                                           AAUDIO_PERFORMANCE_MODE_NONE);
+    result = AAudioStreamBuilder_openStream(builder, &audioStream_);
+  }
   AAudioStreamBuilder_delete(builder);
 
   if (result != AAUDIO_OK) {
@@ -219,8 +236,12 @@ bool AndroidVideoDecoder::openAudioStream() {
     return false;
   }
 
-  MUY_LOGI("AAudio stream opened: %dHz %dch", audioSampleRate_,
-           audioChannelCount_);
+  int32_t actualRate = AAudioStream_getSampleRate(audioStream_);
+  int32_t actualCh = AAudioStream_getChannelCount(audioStream_);
+  aaudio_format_t actualFmt = AAudioStream_getFormat(audioStream_);
+  MUY_LOGI("AAudio stream opened: requested=%dHz/%dch actual=%dHz/%dch fmt=%d",
+           audioSampleRate_, audioChannelCount_, actualRate, actualCh,
+           static_cast<int>(actualFmt));
   return true;
 }
 
@@ -249,19 +270,13 @@ void AndroidVideoDecoder::start() {
                status);
       AMediaCodec_delete(audioCodec_);
       audioCodec_ = nullptr;
-    } else if (openAudioStream()) {
-      aaudio_result_t r = AAudioStream_requestStart(audioStream_);
-      if (r != AAUDIO_OK) {
-        MUY_LOGW("Failed to start AAudio stream: %s",
-                 AAudio_convertResultToText(r));
-        AAudioStream_close(audioStream_);
-        audioStream_ = nullptr;
-      } else {
-        audioRunning_.store(true);
-        audioRenderThread_ =
-            std::thread(&AndroidVideoDecoder::audioRenderLoop, this);
-        MUY_LOGI("Audio started");
-      }
+    } else {
+      // AAudio stream is opened inside audioRenderLoop after the first real
+      // output buffer is available and the actual PCM format is known.
+      audioRunning_.store(true);
+      audioRenderThread_ =
+          std::thread(&AndroidVideoDecoder::audioRenderLoop, this);
+      MUY_LOGI("Audio thread launched");
     }
   }
 
@@ -482,6 +497,16 @@ void AndroidVideoDecoder::audioRenderLoop() {
   MUY_LOGI("Audio render thread started (%dHz %dch)", audioSampleRate_,
            audioChannelCount_);
 
+  // All audio format state is determined from the first real output buffer.
+  // The AAudio stream is opened there too, so it always uses the actual format.
+  int32_t bytesPerSample = 2;
+  bool outputFormatProbed = false;
+  bool audioEosSent = false;
+  // Scratch buffer for float→int16 conversion (grows once, never reallocates).
+  std::vector<int16_t> convBuf;
+  // Original container sample rate — kept to detect HE-AAC SBR upsampling.
+  const int32_t containerSampleRate = audioSampleRate_;
+
   while (audioRunning_.load()) {
     if (seeking_.load()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -490,20 +515,23 @@ void AndroidVideoDecoder::audioRenderLoop() {
 
     bool didWork = false;
 
-    // 1. Feed encoded audio from audioExtractor_ into audioCodec_ (non-blocking)
-    if (audioExtractor_) {
+    // 1. Feed encoded audio from audioExtractor_ into audioCodec_ (non-blocking).
+    //    Stop feeding once EOS has been signaled — sending a second EOS corrupts
+    //    the codec state.
+    if (audioExtractor_ && !audioEosSent) {
       ssize_t inIdx = AMediaCodec_dequeueInputBuffer(audioCodec_, 0);
       if (inIdx >= 0) {
-        size_t bufSize = 0;
+        size_t inBufCap = 0;
         uint8_t *inBuf = AMediaCodec_getInputBuffer(
-            audioCodec_, static_cast<size_t>(inIdx), &bufSize);
+            audioCodec_, static_cast<size_t>(inIdx), &inBufCap);
         if (inBuf) {
           ssize_t sampleSize =
-              AMediaExtractor_readSampleData(audioExtractor_, inBuf, bufSize);
+              AMediaExtractor_readSampleData(audioExtractor_, inBuf, inBufCap);
           if (sampleSize < 0) {
             AMediaCodec_queueInputBuffer(audioCodec_,
                                          static_cast<size_t>(inIdx), 0, 0, 0,
                                          AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
+            audioEosSent = true;
             MUY_LOGI("Audio EOS signaled to codec");
           } else {
             int64_t pts = AMediaExtractor_getSampleTime(audioExtractor_);
@@ -518,59 +546,177 @@ void AndroidVideoDecoder::audioRenderLoop() {
       }
     }
 
-    // 2. Dequeue decoded PCM from audioCodec_ (2ms timeout to avoid busy-spin)
+    // 2. Dequeue decoded PCM from audioCodec_ (2ms timeout to avoid busy-spin).
     AMediaCodecBufferInfo info;
     ssize_t outIdx = AMediaCodec_dequeueOutputBuffer(audioCodec_, &info, 2000);
 
     if (outIdx >= 0) {
-      size_t bufSize = 0;
-      uint8_t *buf = AMediaCodec_getOutputBuffer(
-          audioCodec_, static_cast<size_t>(outIdx), &bufSize);
+      // Codec config frames carry no PCM data — release immediately.
+      if (info.flags & AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG) {
+        AMediaCodec_releaseOutputBuffer(audioCodec_,
+                                        static_cast<size_t>(outIdx), false);
+      } else {
+        // info.size is the actual decoded bytes; info.offset is the start within
+        // the buffer. Use these — NOT the buffer capacity from getOutputBuffer.
+        size_t outBufCap = 0;
+        uint8_t *buf = AMediaCodec_getOutputBuffer(
+            audioCodec_, static_cast<size_t>(outIdx), &outBufCap);
 
-      if (buf && bufSize > 0 && audioStream_) {
-        // Throttle: don't let audio run more than 200ms ahead of the video
-        // timeline. Without this, the AAudio buffer fills and write blocks,
-        // which (without the separate extractor) would stall the whole pipeline.
-        Timestamp audioPts =
-            static_cast<Timestamp>(info.presentationTimeUs) * 1000;
-        Timestamp anchor = startPts_.load();
-        if (anchor >= 0) {
-          int64_t renderTimeNs = startSystemTimeNs_.load() + (audioPts - anchor);
-          int64_t aheadNs = renderTimeNs - steadyClockNanos();
-          constexpr int64_t kMaxAudioAheadNs = 200'000'000LL; // 200ms
-          if (aheadNs > kMaxAudioAheadNs) {
-            MUY_LOGD("Audio throttle: sleeping %.2fms",
-                     (aheadNs - kMaxAudioAheadNs) / 1.0e6);
-            std::this_thread::sleep_for(
-                std::chrono::nanoseconds(aheadNs - kMaxAudioAheadNs));
+        if (buf && info.size > 0) {
+          // ── Format probe (runs exactly once) ─────────────────────────────
+          // The "pcm-encoding" key is absent on many devices even when the
+          // codec outputs PCM_FLOAT, so we also infer encoding from info.size
+          // relative to known AAC frame sizes (960 / 1024 / 2048 samples).
+          // We also open the AAudio stream here so it always uses the correct
+          // sample rate — critical for HE-AAC files where the codec upsamples.
+          if (!outputFormatProbed) {
+            outputFormatProbed = true;
+
+            AMediaFormat *outFmt = AMediaCodec_getOutputFormat(audioCodec_);
+            int32_t actualSr = audioSampleRate_;
+            int32_t actualCh = audioChannelCount_;
+            int32_t pcmEnc = 2;
+            AMediaFormat_getInt32(outFmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &actualSr);
+            AMediaFormat_getInt32(outFmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &actualCh);
+            AMediaFormat_getInt32(outFmt, "pcm-encoding", &pcmEnc);
+            AMediaFormat_delete(outFmt);
+
+            if (actualSr > 0) audioSampleRate_ = actualSr;
+            if (actualCh > 0) audioChannelCount_ = actualCh;
+
+            // Determine bytesPerSample. Prefer the explicit "pcm-encoding" key
+            // (2=PCM_I16, 4=PCM_FLOAT). When absent, infer from info.size:
+            //   expected bytes = samplesPerFrame * channels * bps
+            // where samplesPerFrame is 960, 1024, or 2048 for AAC variants.
+            if (pcmEnc == 4) {
+              bytesPerSample = 4;
+            } else if (pcmEnc == 2) {
+              bytesPerSample = 2;
+            } else {
+              // Key absent — infer from buffer size.
+              // Check which (samplesPerFrame, bps) pair cleanly divides info.size.
+              bytesPerSample = 2; // default
+              for (int spf : {1024, 960, 2048}) {
+                if (audioChannelCount_ > 0 &&
+                    static_cast<int32_t>(info.size) ==
+                        spf * audioChannelCount_ * 4) {
+                  // Only float matches this frame size — int16 would need half
+                  // the bytes (i.e., spf/2 * ch * 2, which is a different spf).
+                  // Guard: also check that int16 with same spf does NOT match.
+                  if (static_cast<int32_t>(info.size) !=
+                      spf * audioChannelCount_ * 2) {
+                    bytesPerSample = 4;
+                    break;
+                  }
+                }
+              }
+              // Ambiguous case (info.size consistent with both int16 at 2×spf
+              // AND float at spf): use sample-rate doubling to decide.
+              // HE-AAC SBR doubles the sample rate → int16 at 2×spf frames.
+              // Same rate as container → more likely float at 1×spf frames.
+              if (bytesPerSample == 2 && audioChannelCount_ > 0) {
+                int32_t framesIfInt16 = static_cast<int32_t>(info.size) /
+                                        (2 * audioChannelCount_);
+                bool sbr = (audioSampleRate_ >= 2 * containerSampleRate &&
+                            containerSampleRate > 0);
+                // If no SBR upsampling and int16 gives a non-standard frame
+                // count, assume float.
+                if (!sbr && framesIfInt16 != 960 && framesIfInt16 != 1024) {
+                  int32_t framesIfFloat = static_cast<int32_t>(info.size) /
+                                          (4 * audioChannelCount_);
+                  if (framesIfFloat == 960 || framesIfFloat == 1024 ||
+                      framesIfFloat == 2048) {
+                    bytesPerSample = 4;
+                  }
+                }
+              }
+            }
+
+            MUY_LOGI("Audio output probed: %dHz %dch pcm-encoding=%d "
+                     "bytes/sample=%d info.size=%zu",
+                     audioSampleRate_, audioChannelCount_, pcmEnc,
+                     bytesPerSample, static_cast<size_t>(info.size));
+
+            // Open AAudio now that the actual format is known.
+            if (!openAudioStream()) {
+              MUY_LOGE("Failed to open AAudio stream — no audio");
+              AMediaCodec_releaseOutputBuffer(
+                  audioCodec_, static_cast<size_t>(outIdx), false);
+              break;
+            }
+            if (AAudioStream_requestStart(audioStream_) != AAUDIO_OK) {
+              MUY_LOGE("Failed to start AAudio stream — no audio");
+              AAudioStream_close(audioStream_);
+              audioStream_ = nullptr;
+              AMediaCodec_releaseOutputBuffer(
+                  audioCodec_, static_cast<size_t>(outIdx), false);
+              break;
+            }
           }
+
+          if (audioStream_) {
+            // ── A/V throttle ───────────────────────────────────────────────
+            Timestamp audioPts =
+                static_cast<Timestamp>(info.presentationTimeUs) * 1000;
+            Timestamp anchor = startPts_.load();
+            if (anchor >= 0) {
+              int64_t renderTimeNs =
+                  startSystemTimeNs_.load() + (audioPts - anchor);
+              int64_t aheadNs = renderTimeNs - steadyClockNanos();
+              constexpr int64_t kMaxAudioAheadNs = 200'000'000LL;
+              if (aheadNs > kMaxAudioAheadNs) {
+                MUY_LOGD("Audio throttle: sleeping %.2fms",
+                         (aheadNs - kMaxAudioAheadNs) / 1.0e6);
+                std::this_thread::sleep_for(
+                    std::chrono::nanoseconds(aheadNs - kMaxAudioAheadNs));
+              }
+            }
+
+            // ── Write PCM ──────────────────────────────────────────────────
+            // numFrames derived from actual data size and probed format.
+            int32_t numFrames = static_cast<int32_t>(info.size) /
+                                (bytesPerSample * audioChannelCount_);
+            if (numFrames > 0) {
+              const void *writePtr = buf + info.offset;
+              if (bytesPerSample == 4) {
+                // Codec outputs float — convert to int16 for the PCM_I16
+                // AAudio stream.
+                const int numSamples = static_cast<int>(info.size) / 4;
+                convBuf.resize(numSamples);
+                const float *f =
+                    reinterpret_cast<const float *>(buf + info.offset);
+                for (int j = 0; j < numSamples; ++j) {
+                  float s = f[j] < -1.f ? -1.f : (f[j] > 1.f ? 1.f : f[j]);
+                  convBuf[j] = static_cast<int16_t>(s * 32767.f);
+                }
+                writePtr = convBuf.data();
+              }
+              aaudio_result_t r = AAudioStream_write(
+                  audioStream_, writePtr, numFrames, 50'000'000LL);
+              if (r < 0) {
+                MUY_LOGW("AAudioStream_write: %s",
+                         AAudio_convertResultToText(r));
+              } else {
+                MUY_LOGV("Audio: wrote %d/%d frames pts=%.3fms", r, numFrames,
+                         audioPts / 1.0e6);
+              }
+            }
+          }
+          didWork = true;
         }
 
-        int32_t numFrames =
-            static_cast<int32_t>(bufSize) / (2 * audioChannelCount_);
-        if (numFrames > 0) {
-          // 100ms timeout: short enough to avoid stalling the render loop.
-          aaudio_result_t r = AAudioStream_write(audioStream_, buf, numFrames,
-                                                  100'000'000LL);
-          if (r < 0) {
-            MUY_LOGW("AAudioStream_write: %s", AAudio_convertResultToText(r));
-          } else {
-            MUY_LOGV("Audio: wrote %d frames", r);
-          }
-        }
-        didWork = true;
+        AMediaCodec_releaseOutputBuffer(audioCodec_,
+                                        static_cast<size_t>(outIdx), false);
       }
 
-      AMediaCodec_releaseOutputBuffer(audioCodec_,
-                                      static_cast<size_t>(outIdx), false);
+      // Stop the audio thread once the codec signals end-of-stream.
+      if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) {
+        MUY_LOGI("Audio codec EOS — render thread exiting");
+        break;
+      }
 
     } else if (outIdx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
-      AMediaFormat *fmt = AMediaCodec_getOutputFormat(audioCodec_);
-      int32_t sr = 0, ch = 0;
-      AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &sr);
-      AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &ch);
-      MUY_LOGI("Audio output format: %dHz %dch", sr, ch);
-      AMediaFormat_delete(fmt);
+      MUY_LOGI("Audio output format changed (will probe on next buffer)");
     }
 
     if (!didWork) {
