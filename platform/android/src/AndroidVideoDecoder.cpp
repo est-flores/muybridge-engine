@@ -270,9 +270,17 @@ void AndroidVideoDecoder::start() {
                status);
       AMediaCodec_delete(audioCodec_);
       audioCodec_ = nullptr;
+    } else if (!openAudioStream()) {
+      MUY_LOGW("Failed to open audio stream - continuing without audio");
+      AMediaCodec_delete(audioCodec_);
+      audioCodec_ = nullptr;
+    } else if (AAudioStream_requestStart(audioStream_) != AAUDIO_OK) {
+      MUY_LOGW("Failed to start audio stream - continuing without audio");
+      AAudioStream_close(audioStream_);
+      audioStream_ = nullptr;
+      AMediaCodec_delete(audioCodec_);
+      audioCodec_ = nullptr;
     } else {
-      // AAudio stream is opened inside audioRenderLoop after the first real
-      // output buffer is available and the actual PCM format is known.
       audioRunning_.store(true);
       audioRenderThread_ =
           std::thread(&AndroidVideoDecoder::audioRenderLoop, this);
@@ -446,15 +454,27 @@ bool AndroidVideoDecoder::processOutput() {
   if (outIdx >= 0) {
     Timestamp pts = static_cast<Timestamp>(info.presentationTimeUs) * 1000;
 
-    // Anchor wall-clock to the first decoded frame, not to start() call time.
+    // Wait for the audio thread to set the timing anchor on its first write.
+    // That gives true A/V sync: both streams reference the same wall-clock
+    // instant. If there is no audio (or audio stalls for >3 s), fall back to
+    // anchoring from this video frame.
     Timestamp anchor = startPts_.load();
     if (anchor == -1) {
-      int64_t nowNs = steadyClockNanos();
-      startSystemTimeNs_.store(nowNs);
-      startPts_.store(pts);
-      anchor = pts;
-      MUY_LOGI("Timing anchor: first_pts=%.3fms wall=%.3fms",
-               pts / 1.0e6, nowNs / 1.0e6);
+      if (audioRunning_.load()) {
+        for (int i = 0; i < 3000 && running_.load(); ++i) {
+          anchor = startPts_.load();
+          if (anchor != -1) break;
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+      }
+      if (anchor == -1) {
+        int64_t nowNs = steadyClockNanos();
+        startSystemTimeNs_.store(nowNs);
+        startPts_.store(pts);
+        anchor = pts;
+        MUY_LOGI("Timing anchor: video (no audio) pts=%.3fms wall=%.3fms",
+                 pts / 1.0e6, nowNs / 1.0e6);
+      }
       MUY_TTFF_MILESTONE("first_frame_decoded");
     }
 
@@ -504,11 +524,13 @@ void AndroidVideoDecoder::audioRenderLoop() {
   bool audioEosSent = false;
   // Scratch buffer for float→int16 conversion (grows once, never reallocates).
   std::vector<int16_t> convBuf;
-  // Original container sample rate — kept to detect HE-AAC SBR upsampling.
-  const int32_t containerSampleRate = audioSampleRate_;
+  // PTS of the previous audio buffer; used to compute numFrames from time
+  // rather than from buffer size (avoids bytesPerSample uncertainty).
+  int64_t prevPresentationTimeUs = -1;
 
   while (audioRunning_.load()) {
     if (seeking_.load()) {
+      prevPresentationTimeUs = -1; // PTS is discontinuous after a seek
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
     }
@@ -563,101 +585,76 @@ void AndroidVideoDecoder::audioRenderLoop() {
             audioCodec_, static_cast<size_t>(outIdx), &outBufCap);
 
         if (buf && info.size > 0) {
-          // ── Format probe (runs exactly once) ─────────────────────────────
-          // The "pcm-encoding" key is absent on many devices even when the
-          // codec outputs PCM_FLOAT, so we also infer encoding from info.size
-          // relative to known AAC frame sizes (960 / 1024 / 2048 samples).
-          // We also open the AAudio stream here so it always uses the correct
-          // sample rate — critical for HE-AAC files where the codec upsamples.
+          // ── Format probe (runs exactly once on first real PCM buffer) ────
+          // The AAudio stream is already open (opened in start() at the
+          // container-declared format). Here we only determine bytesPerSample
+          // and reopen the stream if the codec changed the sample rate
+          // (e.g., HE-AAC SBR doubles the container rate).
           if (!outputFormatProbed) {
             outputFormatProbed = true;
 
             AMediaFormat *outFmt = AMediaCodec_getOutputFormat(audioCodec_);
             int32_t actualSr = audioSampleRate_;
             int32_t actualCh = audioChannelCount_;
-            int32_t pcmEnc = 2;
+            // Sentinel -1: AMediaFormat_getInt32 leaves pcmEnc unchanged when
+            // the key is absent, so never pre-set it to a valid value.
+            int32_t pcmEnc = -1;
             AMediaFormat_getInt32(outFmt, AMEDIAFORMAT_KEY_SAMPLE_RATE, &actualSr);
             AMediaFormat_getInt32(outFmt, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &actualCh);
             AMediaFormat_getInt32(outFmt, "pcm-encoding", &pcmEnc);
             AMediaFormat_delete(outFmt);
 
-            if (actualSr > 0) audioSampleRate_ = actualSr;
-            if (actualCh > 0) audioChannelCount_ = actualCh;
+            // Default to PCM_I16 when key absent; size-based inference is
+            // unreliable (HE-AAC 2048-frame int16 == float 1024-frame in bytes).
+            bytesPerSample = (pcmEnc == 4) ? 4 : 2;
 
-            // Determine bytesPerSample. Prefer the explicit "pcm-encoding" key
-            // (2=PCM_I16, 4=PCM_FLOAT). When absent, infer from info.size:
-            //   expected bytes = samplesPerFrame * channels * bps
-            // where samplesPerFrame is 960, 1024, or 2048 for AAC variants.
-            if (pcmEnc == 4) {
-              bytesPerSample = 4;
-            } else if (pcmEnc == 2) {
-              bytesPerSample = 2;
-            } else {
-              // Key absent — infer from buffer size.
-              // Check which (samplesPerFrame, bps) pair cleanly divides info.size.
-              bytesPerSample = 2; // default
-              for (int spf : {1024, 960, 2048}) {
-                if (audioChannelCount_ > 0 &&
-                    static_cast<int32_t>(info.size) ==
-                        spf * audioChannelCount_ * 4) {
-                  // Only float matches this frame size — int16 would need half
-                  // the bytes (i.e., spf/2 * ch * 2, which is a different spf).
-                  // Guard: also check that int16 with same spf does NOT match.
-                  if (static_cast<int32_t>(info.size) !=
-                      spf * audioChannelCount_ * 2) {
-                    bytesPerSample = 4;
-                    break;
-                  }
-                }
-              }
-              // Ambiguous case (info.size consistent with both int16 at 2×spf
-              // AND float at spf): use sample-rate doubling to decide.
-              // HE-AAC SBR doubles the sample rate → int16 at 2×spf frames.
-              // Same rate as container → more likely float at 1×spf frames.
-              if (bytesPerSample == 2 && audioChannelCount_ > 0) {
-                int32_t framesIfInt16 = static_cast<int32_t>(info.size) /
-                                        (2 * audioChannelCount_);
-                bool sbr = (audioSampleRate_ >= 2 * containerSampleRate &&
-                            containerSampleRate > 0);
-                // If no SBR upsampling and int16 gives a non-standard frame
-                // count, assume float.
-                if (!sbr && framesIfInt16 != 960 && framesIfInt16 != 1024) {
-                  int32_t framesIfFloat = static_cast<int32_t>(info.size) /
-                                          (4 * audioChannelCount_);
-                  if (framesIfFloat == 960 || framesIfFloat == 1024 ||
-                      framesIfFloat == 2048) {
-                    bytesPerSample = 4;
-                  }
-                }
-              }
+            bool reopenNeeded = false;
+            if (actualSr > 0 && actualSr != audioSampleRate_) {
+              audioSampleRate_ = actualSr;
+              reopenNeeded = true;
+            }
+            if (actualCh > 0 && actualCh != audioChannelCount_) {
+              audioChannelCount_ = actualCh;
+              reopenNeeded = true;
             }
 
             MUY_LOGI("Audio output probed: %dHz %dch pcm-encoding=%d "
-                     "bytes/sample=%d info.size=%zu",
+                     "bytes/sample=%d info.size=%zu reopen=%d",
                      audioSampleRate_, audioChannelCount_, pcmEnc,
-                     bytesPerSample, static_cast<size_t>(info.size));
+                     bytesPerSample, static_cast<size_t>(info.size),
+                     static_cast<int>(reopenNeeded));
 
-            // Open AAudio now that the actual format is known.
-            if (!openAudioStream()) {
-              MUY_LOGE("Failed to open AAudio stream — no audio");
-              AMediaCodec_releaseOutputBuffer(
-                  audioCodec_, static_cast<size_t>(outIdx), false);
-              break;
-            }
-            if (AAudioStream_requestStart(audioStream_) != AAUDIO_OK) {
-              MUY_LOGE("Failed to start AAudio stream — no audio");
+            if (reopenNeeded && audioStream_) {
+              AAudioStream_requestStop(audioStream_);
               AAudioStream_close(audioStream_);
               audioStream_ = nullptr;
-              AMediaCodec_releaseOutputBuffer(
-                  audioCodec_, static_cast<size_t>(outIdx), false);
-              break;
+              if (!openAudioStream() ||
+                  AAudioStream_requestStart(audioStream_) != AAUDIO_OK) {
+                MUY_LOGE("Failed to reopen AAudio after format change");
+                if (audioStream_) { AAudioStream_close(audioStream_); audioStream_ = nullptr; }
+                AMediaCodec_releaseOutputBuffer(
+                    audioCodec_, static_cast<size_t>(outIdx), false);
+                break;
+              }
             }
           }
 
           if (audioStream_) {
-            // ── A/V throttle ───────────────────────────────────────────────
             Timestamp audioPts =
                 static_cast<Timestamp>(info.presentationTimeUs) * 1000;
+
+            // ── Set timing anchor (first audio write only) ──────────────────
+            // Store startSystemTimeNs_ BEFORE startPts_ so the video thread
+            // always reads a valid wall time when it sees startPts_ != -1.
+            if (startPts_.load() == -1) {
+              Timestamp expected = -1LL;
+              startSystemTimeNs_.store(steadyClockNanos());
+              if (startPts_.compare_exchange_strong(expected, audioPts)) {
+                MUY_LOGI("Timing anchor: audio pts=%.3fms", audioPts / 1.0e6);
+              }
+            }
+
+            // ── A/V throttle ───────────────────────────────────────────────
             Timestamp anchor = startPts_.load();
             if (anchor >= 0) {
               int64_t renderTimeNs =
@@ -673,9 +670,26 @@ void AndroidVideoDecoder::audioRenderLoop() {
             }
 
             // ── Write PCM ──────────────────────────────────────────────────
-            // numFrames derived from actual data size and probed format.
-            int32_t numFrames = static_cast<int32_t>(info.size) /
-                                (bytesPerSample * audioChannelCount_);
+            // Prefer PTS-delta for numFrames: avoids bytesPerSample uncertainty
+            // and correctly handles HE-AAC SBR where frame count doubles.
+            // Fall back to size-based only for the very first buffer or if the
+            // delta is implausible (seek discontinuity, first frame after open).
+            int32_t numFrames;
+            {
+              int64_t ptsDelta = (prevPresentationTimeUs >= 0)
+                  ? (info.presentationTimeUs - prevPresentationTimeUs)
+                  : -1LL;
+              // Accept deltas in the range [5ms, 150ms]; anything outside
+              // suggests a discontinuity — fall back to size-based.
+              if (ptsDelta >= 5000LL && ptsDelta <= 150000LL && audioSampleRate_ > 0) {
+                numFrames = static_cast<int32_t>(
+                    (ptsDelta * audioSampleRate_ + 500000LL) / 1000000LL);
+              } else {
+                numFrames = static_cast<int32_t>(info.size) /
+                            (bytesPerSample * audioChannelCount_);
+              }
+            }
+            prevPresentationTimeUs = info.presentationTimeUs;
             if (numFrames > 0) {
               const void *writePtr = buf + info.offset;
               if (bytesPerSample == 4) {
