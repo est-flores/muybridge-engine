@@ -1,16 +1,12 @@
 #ifndef MUYBRIDGE_ANDROID_VIDEO_DECODER_H
 #define MUYBRIDGE_ANDROID_VIDEO_DECODER_H
 
-/**
- * @file AndroidVideoDecoder.h
- * @brief Hardware video decoder using Android MediaCodec NDK.
- */
-
 #include "muybridge/Clock.h"
 #include "muybridge/IEngine.h"
 #include "muybridge/Log.h"
 
 #include <android/native_window.h>
+#include <aaudio/AAudio.h>
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaExtractor.h>
 
@@ -24,121 +20,75 @@
 namespace muybridge {
 namespace android {
 
-/**
- * @brief Callback when a frame is available for rendering.
- * @param pts Presentation timestamp in nanoseconds
- */
 using FrameCallback = std::function<void(Timestamp pts)>;
-
-/**
- * @brief Callback when media info is available.
- */
 using MediaInfoCallback = std::function<void(const MediaInfo &)>;
 
-/**
- * @class AndroidVideoDecoder
- * @brief Hardware decoder wrapper for AMediaCodec.
- *
- * Features:
- * - Zero-copy output to ANativeWindow (SurfaceTexture)
- * - Async decode with callback-based frame notification
- * - Automatic codec selection for hardware acceleration
- */
 class AndroidVideoDecoder {
 public:
   AndroidVideoDecoder();
   ~AndroidVideoDecoder();
 
-  // Non-copyable
   AndroidVideoDecoder(const AndroidVideoDecoder &) = delete;
   AndroidVideoDecoder &operator=(const AndroidVideoDecoder &) = delete;
 
-  /**
-   * @brief Set the output surface for decoded frames.
-   * @param window ANativeWindow from SurfaceTexture
-   */
   void setSurface(ANativeWindow *window);
-
-  /**
-   * @brief Open media file and configure decoder.
-   * @param url File path or URL
-   * @return true on success
-   */
   bool open(const std::string &url);
-
-  /**
-   * @brief Start decoding.
-   */
   void start();
-
-  /**
-   * @brief Stop decoding and flush.
-   */
   void stop();
-
-  /**
-   * @brief Seek to position.
-   * @param positionNanos Target position in nanoseconds
-   */
   void seek(Timestamp positionNanos);
-
-  /**
-   * @brief Release all resources.
-   */
   void release();
 
-  /**
-   * @brief Get media information.
-   */
   const MediaInfo &getMediaInfo() const { return mediaInfo_; }
-
-  /**
-   * @brief Set callback for frame available.
-   */
   void setFrameCallback(FrameCallback callback);
-
-  /**
-   * @brief Set callback for media info ready.
-   */
   void setMediaInfoCallback(MediaInfoCallback callback);
-
-  /**
-   * @brief Check if end of stream reached.
-   */
   bool isEndOfStream() const { return endOfStream_.load(); }
 
 private:
-  // Decode thread function
+  // Video decode thread
   void decodeLoop();
-
-  // Extract next sample from container
   bool extractSample();
-
-  // Process decoder output
   bool processOutput();
-
-  // Find video track in container
   int findVideoTrack();
-
-  // Configure codec from format
   bool configureCodec(AMediaFormat *format);
 
-  // State
+  // Audio render thread
+  void audioRenderLoop();
+  int findAudioTrack();
+  bool configureAudioCodec(AMediaFormat *format);
+  bool openAudioStream();
+
+  static int64_t steadyClockNanos() noexcept;
+
+  // Shared state
   std::atomic<bool> running_{false};
   std::atomic<bool> endOfStream_{false};
   std::atomic<bool> seeking_{false};
 
+  // Frame-pacing timing anchor (captured on first decoded frame)
+  std::atomic<int64_t> startSystemTimeNs_{0};
+  std::atomic<Timestamp> startPts_{-1};
+
   // Media components
-  AMediaExtractor *extractor_ = nullptr;
-  AMediaCodec *codec_ = nullptr;
+  AMediaExtractor *extractor_ = nullptr;       // video-only extractor
+  AMediaExtractor *audioExtractor_ = nullptr;  // audio-only extractor
+  AMediaCodec *codec_ = nullptr;       // video codec
+  AMediaCodec *audioCodec_ = nullptr;  // audio codec
   ANativeWindow *surface_ = nullptr;
+
+  // Audio output
+  AAudioStream *audioStream_ = nullptr;
+  std::atomic<bool> audioRunning_{false};
+  int32_t audioSampleRate_ = 44100;
+  int32_t audioChannelCount_ = 2;
 
   // Media info
   MediaInfo mediaInfo_;
   int videoTrackIndex_ = -1;
+  int audioTrackIndex_ = -1;
 
   // Threading
   std::thread decodeThread_;
+  std::thread audioRenderThread_;
   std::mutex mutex_;
 
   // Callbacks

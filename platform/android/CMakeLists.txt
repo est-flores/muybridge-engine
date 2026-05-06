@@ -17,6 +17,10 @@ if(NOT ANDROID)
     message(FATAL_ERROR "This CMakeLists.txt is for Android only")
 endif()
 
+if(ANDROID_PLATFORM_LEVEL LESS 26)
+    message(FATAL_ERROR "AAudio requires minSdk 26 (Android 8.0)")
+endif()
+
 #-------------------------------------------------------------------------------
 # Core Library Sources (inline build)
 #-------------------------------------------------------------------------------
@@ -72,6 +76,9 @@ find_library(GLES3_LIB GLESv3 REQUIRED)
 # EGL
 find_library(EGL_LIB EGL REQUIRED)
 
+# AAudio (API 26+; NDK stubs allow linking with any minSdk)
+find_library(AAUDIO_LIB aaudio)
+
 target_link_libraries(muybridge_android
     PRIVATE
         ${MEDIANDK_LIB}
@@ -79,6 +86,7 @@ target_link_libraries(muybridge_android
         ${LOG_LIB}
         ${GLES3_LIB}
         ${EGL_LIB}
+        $<$<BOOL:${AAUDIO_LIB}>:${AAUDIO_LIB}>
 )
 
 #-------------------------------------------------------------------------------
