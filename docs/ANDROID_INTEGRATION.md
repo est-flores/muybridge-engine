@@ -9,7 +9,7 @@ Add to your `build.gradle.kts`:
 ```kotlin
 repositories {
     maven {
-        url = uri("https://maven.pkg.github.com/yourorg/muybridge-engine")
+        url = uri("https://maven.pkg.github.com/est-flores/muybridge-engine")
         credentials {
             username = "your-github-username"
             password = "your-github-token"  // with read:packages scope
@@ -140,5 +140,5 @@ fun VideoPlayer(url: String) {
 
 ## Support
 
-- 📖 [Full Documentation](https://github.com/yourorg/muybridge-engine)
-- 🐛 [Report Issues](https://github.com/yourorg/muybridge-engine/issues)
+- 📖 [Full Documentation](https://github.com/est-flores/muybridge-engine)
+- 🐛 [Report Issues](https://github.com/est-flores/muybridge-engine/issues)

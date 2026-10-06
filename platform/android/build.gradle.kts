@@ -94,12 +94,12 @@ publishing {
             pom {
                 name.set("Muybridge Player")
                 description.set("Hardware-accelerated video player for Android")
-                url.set("https://github.com/formula-systems-org/muybridge-engine")
+                url.set("https://github.com/est-flores/muybridge-engine")
                 
                 licenses {
                     license {
-                        name.set("MIT License")
-                        url.set("https://opensource.org/licenses/MIT")
+                        name.set("All rights reserved")
+                        comments.set("Copyright Formula Systems, LLC. All rights reserved. The source is published for reference; no license to use, copy or distribute it is granted.")
                     }
                 }
                 
@@ -111,8 +111,8 @@ publishing {
                 }
                 
                 scm {
-                    connection.set("scm:git:git://github.com/formula-systems-org/muybridge-engine.git")
-                    url.set("https://github.com/formula-systems-org/muybridge-engine")
+                    connection.set("scm:git:git://github.com/est-flores/muybridge-engine.git")
+                    url.set("https://github.com/est-flores/muybridge-engine")
                 }
             }
         }
@@ -121,7 +121,7 @@ publishing {
     repositories {
         maven {
             name = "GitHubPackages"
-            url = uri("https://maven.pkg.github.com/formula-systems-org/muybridge-engine")
+            url = uri("https://maven.pkg.github.com/est-flores/muybridge-engine")
             credentials {
                 username = System.getenv("GITHUB_ACTOR") ?: ""
                 password = System.getenv("ACCESS_TOKEN") ?: ""

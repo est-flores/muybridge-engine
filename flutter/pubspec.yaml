@@ -1,7 +1,7 @@
 name: muybridge_flutter
 description: Flutter plugin for Muybridge hardware-accelerated video playback.
 version: 0.1.0
-homepage: https://github.com/formula-systems-org/muybridge-engine
+homepage: https://github.com/est-flores/muybridge-engine
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

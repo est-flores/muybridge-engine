@@ -5,8 +5,8 @@
 #-------------------------------------------------------------------------------
 # Build Outputs
 #-------------------------------------------------------------------------------
-# CMake build directories
-/build/
+# Build directories (CMake, Gradle, Flutter, Xcode)
+build/
 /cmake-build-*/
 /.build/
 
@@ -55,15 +55,14 @@ DerivedData/
 #-------------------------------------------------------------------------------
 # Android (Gradle)
 #-------------------------------------------------------------------------------
-/platform/android/.gradle/
-/platform/android/build/
-/platform/android/.cxx/
-/platform/android/local.properties
+.gradle/
+.cxx/
+local.properties
 
-# Flutter Android plugin build artifacts
-flutter/android/.cxx/
-flutter/android/build/
-flutter/android/local.properties
+#-------------------------------------------------------------------------------
+# Flutter / Dart
+#-------------------------------------------------------------------------------
+.dart_tool/
 
 #-------------------------------------------------------------------------------
 # Swift Package Manager
@@ -82,8 +81,9 @@ Package.resolved
 .cache/
 .clangd/
 
-# Core dumps
-core
+# Core dumps (root only, so src/core/ is not ignored)
+/core
+/core.[0-9]*
 
 # Debug files
 *.dSYM/

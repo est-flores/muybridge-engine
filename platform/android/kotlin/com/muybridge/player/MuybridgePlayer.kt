@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * Muybridge video player for Android.
  *
  * Hardware-accelerated video playback with:
- * - Sub-200ms TTFF
+ * - Designed for a sub-200ms TTFF target
  * - Zero-copy decode to GPU
  * - A/V sync within ±16ms
  */

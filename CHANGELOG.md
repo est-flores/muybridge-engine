@@ -8,8 +8,6 @@ and this project adheres to
 
 ## [Unreleased]
 
-## [1.0.0] - 2024-XX-XX
-
 ### Added
 
 - Initial release
@@ -52,4 +50,4 @@ and this project adheres to
 ---
 
 _For more details, see the
-[release notes](https://github.com/yourorg/muybridge-engine/releases)._
+[release notes](https://github.com/est-flores/muybridge-engine/releases)._

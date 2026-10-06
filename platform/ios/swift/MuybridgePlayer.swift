@@ -9,7 +9,7 @@ import QuartzCore
 /// Muybridge video player for iOS.
 ///
 /// Hardware-accelerated video playback with:
-/// - Sub-200ms TTFF
+/// - Designed for a sub-200ms TTFF target
 /// - Zero-copy decode to Metal
 /// - A/V sync within ±16ms
 public final class MuybridgePlayer: ObservableObject {

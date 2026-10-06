@@ -3,8 +3,8 @@ cmake_minimum_required(VERSION 3.16)
 #===============================================================================
 # MUYBRIDGE ENGINE - Core Video Engine for Mobile
 #===============================================================================
-# A production-grade, hardware-accelerated video pipeline for Android/iOS
-# targeting sub-200ms Time-to-First-Frame (TTFF) with zero-copy architecture.
+# A hardware-accelerated video pipeline for Android/iOS, designed for a
+# sub-200ms Time-to-First-Frame (TTFF) target with a zero-copy architecture.
 #===============================================================================
 
 project(muybridge-engine

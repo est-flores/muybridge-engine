@@ -7,7 +7,7 @@ Get hardware-accelerated video playback in your iOS app in 2 minutes! 🚀
 ### Swift Package Manager (Recommended)
 
 1. In Xcode: **File → Add Package Dependencies**
-2. Enter: `https://github.com/yourorg/muybridge-engine`
+2. Enter: `https://github.com/est-flores/muybridge-engine`
 3. Select version: `1.0.0`
 4. Click **Add Package**
 
@@ -15,7 +15,7 @@ Or add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/yourorg/muybridge-engine", from: "1.0.0")
+    .package(url: "https://github.com/est-flores/muybridge-engine", from: "1.0.0")
 ]
 ```
 
@@ -163,5 +163,5 @@ enum State {
 
 ## Support
 
-- 📖 [Full Documentation](https://github.com/yourorg/muybridge-engine)
-- 🐛 [Report Issues](https://github.com/yourorg/muybridge-engine/issues)
+- 📖 [Full Documentation](https://github.com/est-flores/muybridge-engine)
+- 🐛 [Report Issues](https://github.com/est-flores/muybridge-engine/issues)

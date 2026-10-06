@@ -1,9 +1,9 @@
 # muybridge_flutter
 
-Flutter plugin for [Muybridge Engine](https://github.com/formula-systems-org/muybridge-engine) — hardware-accelerated video playback for iOS and Android.
+Flutter plugin for [Muybridge Engine](https://github.com/est-flores/muybridge-engine) — hardware-accelerated video playback for iOS and Android.
 
 - Zero-copy decode to GPU (`CVPixelBufferRef` on iOS, `SurfaceTexture` on Android)
-- Sub-200ms time-to-first-frame
+- Designed for a sub-200 ms time-to-first-frame target
 - Loading state stream for buffering indicators
 - Pure renderer — no UI, no controls, no business logic
 
@@ -19,7 +19,7 @@ dependencies:
     path: ../muybridge-engine/flutter   # local path
     # or from git:
     # git:
-    #   url: https://github.com/formula-systems-org/muybridge-engine
+    #   url: https://github.com/est-flores/muybridge-engine
     #   path: flutter
 ```
 
